@@ -63,6 +63,8 @@ class CustomAlgorithm : public Algorithm {
     // to traverse the whole workload Chakra ET.
     Chakra::ETFeeder* et_feeder;
     CommunicatorGroup* comm_group;
+    bool finalized;
+    uint64_t pending_callbacks;
 };
 
 }  // namespace AstraSim

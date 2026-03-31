@@ -11,6 +11,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/SendPacketEventHandlerData.hh"
 #include "astra-sim/system/astraccl/custom_collectives/CustomAlgorithm.hh"
 #include "extern/graph_frontend/chakra/src/feeder_v3/et_feeder.h"
+#include <stdexcept>
 
 using namespace std;
 using namespace AstraSim;
@@ -34,6 +35,8 @@ CustomAlgorithm::CustomAlgorithm(std::string et_filename, int id, int pos_in_com
         std::exit(1);
     }
     this->id = id;
+    this->finalized = false;
+    this->pending_callbacks = 0;
 }
 
 int CustomAlgorithm::convert_algo_rank_to_real_rank(int algo_rank) {
@@ -60,6 +63,8 @@ void CustomAlgorithm::issue(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
         sehd->wlhd = new WorkloadLayerHandlerData;
         sehd->wlhd->node_id = node->id();
         sehd->event = EventType::PacketSent;
+        sehd->sys_id = stream->owner->id;
+        pending_callbacks++;
         stream->owner->front_end_sim_send(
             0, Sys::dummy_data,
             // Note that we're using the comm size as hardcoded in the Impl
@@ -76,6 +81,9 @@ void CustomAlgorithm::issue(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
         rcehd->wlhd->node_id = node->id();
         rcehd->custom_algorithm = this;
         rcehd->event = EventType::PacketReceived;
+        rcehd->sys_id = stream->owner->id;
+        rcehd->ready_time = Sys::boostedTick();
+        pending_callbacks++;
         stream->owner->front_end_sim_recv(
             0, Sys::dummy_data, node->comm_size(), UINT8, src_rank,
             node->comm_tag(), &rcv_req, Sys::FrontEndSendRecvType::NATIVE,
@@ -91,6 +99,7 @@ void CustomAlgorithm::issue(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
             // nanoseconds.
             runtime = node->runtime() * 1000;
         }
+        pending_callbacks++;
         stream->owner->register_event(this, EventType::General, wlhd, runtime);
     }
 }
@@ -102,7 +111,14 @@ void CustomAlgorithm::issue_dep_free_nodes() {
         shared_ptr<Chakra::FeederV3::ETFeederNode> node =
             et_feeder->lookupNode(node_id);
         if (node != nullptr) {
-            issue(node);
+            try {
+                issue(node);
+            } catch (const std::runtime_error& e) {
+                // Node may have been taken by another callback, skip it
+                // The node will be re-issued in the next call to issue_dep_free_nodes
+                auto logger = AstraSim::LoggerFactory::get_logger("system::astraccl::custom_collectives");
+                logger->debug("Skipping node {} in issue_dep_free_nodes: {}", node_id, e.what());
+            }
         }
     }
 }
@@ -111,6 +127,19 @@ void CustomAlgorithm::issue_dep_free_nodes() {
 // Release the Chakra node for the completed operator and issue downstream
 // nodes.
 void CustomAlgorithm::call(EventType event, CallData* data) {
+    if (event == EventType::CollectiveCommunicationFinished) {
+        exit();
+        return;
+    }
+
+    if (finalized) {
+        return;
+    }
+
+    if (pending_callbacks > 0) {
+        pending_callbacks--;
+    }
+
     if (data == nullptr) {
         throw runtime_error(
             "CustomAlgorithm::call does not have node id encoded "
@@ -126,10 +155,17 @@ void CustomAlgorithm::call(EventType event, CallData* data) {
     delete wlhd;
 
     if (dep_resolver.get_ongoing_nodes().empty() &&
-        dep_resolver.get_dependancy_free_nodes().empty()) {
+        dep_resolver.get_dependancy_free_nodes().empty() &&
+        pending_callbacks == 0) {
         // There are no more nodes to execute, and no node is executing, so we
         // finish the collective algorithm.
-        exit();
+        if (!finalized) {
+            finalized = true;
+            Tick delay = 0;
+            stream->owner->register_event(
+                this, EventType::CollectiveCommunicationFinished, nullptr,
+                delay);
+        }
     }
 }
 
