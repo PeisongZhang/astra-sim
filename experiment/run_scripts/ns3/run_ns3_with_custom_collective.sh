@@ -4,7 +4,7 @@ set -x
 
 SCRIPT_DIR=$(dirname "$(realpath $0)")
 ASTRA_SIM_DIR="${SCRIPT_DIR:?}"/../../..
-EXAMPLES_DIR="${ASTRA_SIM_DIR:?}"/examples
+EXAMPLES_DIR="${ASTRA_SIM_DIR:?}"/experiment
 NS3_DIR="${ASTRA_SIM_DIR:?}"/extern/network_backend/ns-3
 
 WORKLOAD="${EXAMPLES_DIR:?}"/workload/microbenchmarks/all_reduce/8npus_1MB/all_reduce
