@@ -14,7 +14,7 @@ function setup {
 }
 function compile {
     cd "${NS3_DIR}"
-    ./ns3 configure --enable-mpi
+    ./ns3 configure --enable-mpi --build-profile=optimized
     ./ns3 build AstraSimNetwork -j $(nproc)
     cd "${SCRIPT_DIR:?}"
 }

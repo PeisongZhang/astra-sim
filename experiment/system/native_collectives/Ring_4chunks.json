@@ -13,11 +13,11 @@
         "ring"
     ],
     "all-to-all-implementation": [
-        "ring"
+        "direct"
     ],
     "collective-optimization": "localBWAware",
-    "local-mem-bw": 1600,
+    "local-mem-bw": 1560,
     "boost-mode": 0,
-    "roofline-enabled": 0,
-    "peak-perf": 900
+    "roofline-enabled": 1,
+    "peak-perf": 312
 }
