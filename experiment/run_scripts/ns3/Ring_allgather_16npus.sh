@@ -19,7 +19,7 @@ cd "${NS3_DIR}/build/scratch"
 
 echo "Running simulation with WORKLOAD: ${WORKLOAD}"
 
-./ns3.42-AstraSimNetwork-default \
+./ns3.42-AstraSimNetwork-optimized \
     --workload-configuration=${WORKLOAD} \
     --system-configuration=${SYSTEM} \
     --network-configuration=${NETWORK} \

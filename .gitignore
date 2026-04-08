@@ -29,3 +29,5 @@ build/astra_htsim/build/
 
 # runs
 runs
+
+.venv/
