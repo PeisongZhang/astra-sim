@@ -237,20 +237,19 @@
 
 | 实验场景 | 并行策略映射 | Wall Time (Cycles) | 暴露通信时间 (Cycles) | Wall Time相对值 | 暴露通信时间占比 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **(In-DC)** | Intra-Node DP + Inter-Node PP |  | |  | |
-| | Intra-Node PP + Inter-Node DP |  |  |  | |
-| **(Inter-DC) Spine Switch * 1** | Intra-DC DP + Inter-DC PP |  |  |  | |
-| **(Inter-DC) Spine Switch * 2** | Intra-DC DP + Inter-DC PP |  |  |  | |
-| **(Inter-DC) OCS-Fullmesh** | Intra-DC DP + Inter-DC PP |  |  |  |  |
-| **(Inter-DC) OCS-Ring** | Intra-DC DP + Inter-DC PP |  |  |  |  |
-| **(Inter-DC) Direct Fiber-Fullmesh** | Intra-DC DP + Inter-DC PP |  |  |  |  |
-| **(Inter-DC) Dual OCS-Fullmesh** | Intra-DC DP + Inter-DC PP |  |  |  |  |
+| **(In-DC)** | Intra-Node DP + Inter-Node PP | 6,118,860,709 | 242,317,857 | 1.0000x | 3.96% |
+| **(Inter-DC) Spine Switch * 1** | Intra-DC DP + Inter-DC PP | 6,129,586,309 | 253,043,457 | 1.0018x | 4.13% |
+| **(Inter-DC) Spine Switch * 2** | Intra-DC DP + Inter-DC PP | 6,132,309,258 | 255,766,406 | 1.0022x | 4.17% |
+| **(Inter-DC) OCS-Fullmesh** | Intra-DC DP + Inter-DC PP | 6,138,431,999 | 261,889,147 | 1.0032x | 4.27% |
+| **(Inter-DC) OCS-Ring** | Intra-DC DP + Inter-DC PP | 6,134,505,058 | 257,962,206 | 1.0026x | 4.21% |
+| **(Inter-DC) Direct Fiber-Fullmesh** | Intra-DC DP + Inter-DC PP | 6,134,727,471 | 258,184,619 | 1.0026x | 4.21% |
+| **(Inter-DC) Dual OCS-Fullmesh** | Intra-DC DP + Inter-DC PP | 6,140,378,702 | 263,835,850 | 1.0035x | 4.30% |
 
 ### 3.2 结果分析
 ----
 
 ## 4 实验计划
-- [ ] ns-3 网络分流问题: 存在多路径流量可以按配置比例分配到不同的路径上
+- [x] ns-3 网络分流问题: 存在多路径流量可以按配置比例分配到不同的路径上
 - [ ] 在Astra-Sim中实现DiLoCo/Local SGD
-- [ ] 按照第二节的网络拓扑架构，分别进行训练仿真
-
+- [x] 按照第二节的网络拓扑架构，分别进行训练仿真(Inter-DC PP)
+- [ ] 按照第二节的网络拓扑架构，分别进行训练仿真(Inter-DC DP)

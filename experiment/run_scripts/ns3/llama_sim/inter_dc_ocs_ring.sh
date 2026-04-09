@@ -3,12 +3,12 @@ set -e
 set -x
 
 SCRIPT_DIR=$(dirname "$(realpath $0)")
-ASTRA_SIM_DIR="${SCRIPT_DIR:?}"/../../..
+ASTRA_SIM_DIR="${SCRIPT_DIR:?}"/../../../..
 EXAMPLES_DIR="${ASTRA_SIM_DIR:?}"/experiment
 NS3_DIR="${ASTRA_SIM_DIR:?}"/extern/network_backend/ns-3
 
 MEMORY="${EXAMPLES_DIR:?}"/remote_memory/analytical/no_memory_expansion.json
-WORKLOAD_DIR="/workspaces/dev_test/tutorials/micro2024/chakra-demo/demo3/llama"
+WORKLOAD_DIR="/home/ps/sow/part2/astra-sim_tutorials/micro2024/chakra-demo/demo3/llama"
 WORKLOAD="${WORKLOAD_DIR}/llama"
 COMM_GROUP_CONFIGURATION="${WORKLOAD_DIR}/llama.json"
 
@@ -16,7 +16,7 @@ LOGICAL_TOPOLOGY="${EXAMPLES_DIR:?}"/network/ns3/sample_16nodes_1D.json
 SYSTEM="${EXAMPLES_DIR:?}"/system/native_collectives/Ring_4chunks.json
 
 # NETWORK="${NS3_DIR:?}"/scratch/config/config_clos.txt
-NETWORK="${EXAMPLES_DIR:?}/run_scripts/ns3/ns3_config/config/16_pp.txt"
+NETWORK="${EXAMPLES_DIR:?}/run_scripts/ns3/ns3_config/config/inter_dc_ocs_ring.txt"
 
 
 cd "${NS3_DIR}/build/scratch"
