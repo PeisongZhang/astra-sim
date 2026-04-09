@@ -20,7 +20,7 @@
 #include <ns3/sim-setting.h>
 #include <ns3/switch-node.h>
 #include <time.h>
-#include <unordered_map>
+#include <algorithm>
 
 using namespace ns3;
 using namespace std;
@@ -81,10 +81,14 @@ typedef pair<int, pair<int, int>> MsgEventKey;
 // Astra-sim specific implementation. We use a mapping with the source port
 // number (another unique value) to hold tag information.
 //   - key: Pair <port_id, Pair <src_id, dst_id>>
-//   - value: tag
+//   - value: metadata used to map each subflow back to its parent send event
 // TODO: It seems we *can* obtain the tag through q->GetTag() at qp_finish.
 // Verify & Simplify.
-map<pair<int, pair<int, int>>, int> sender_src_port_map;
+struct SenderFlowMetadata {
+  int tag;
+  int parent_src_port;
+};
+map<pair<int, pair<int, int>>, SenderFlowMetadata> sender_src_port_map;
 
 // NodeHash is used to count how many bytes were sent/received by this node.
 // Refer to sim_finish().
@@ -120,13 +124,38 @@ map<MsgEventKey, MsgEvent> sim_recv_waiting_hash;
 //   System layer has not yet called sim_recv
 map<MsgEventKey, int> received_msg_standby_hash;
 
+uint32_t get_host_uplink_slots(int host_id) {
+  Ptr<Node> host = n.Get(host_id);
+  uint32_t slots = 0;
+  auto host_nbr_it = nbr2if.find(host);
+  if (host_nbr_it == nbr2if.end()) {
+    return 1;
+  }
+  for (const auto &nbr_entry : host_nbr_it->second) {
+    const vector<Interface> &interfaces = nbr_entry.second;
+    for (const auto &intf : interfaces) {
+      if (!intf.up) {
+        continue;
+      }
+      slots += std::max(1u, intf.weight);
+    }
+  }
+  return std::max(1u, slots);
+}
+
 // send_flow commands the ns3 simulator to schedule a RDMA message to be sent
 // between two pair of nodes. send_flow is triggered by sim_send.
 void send_flow(int src_id, int dst, int maxPacketCount,
                void (*msg_handler)(void *fun_arg), void *fun_arg, int tag) {
-  // Get a new port number.
-  uint32_t port = portNumber[src_id][dst]++;
-  sender_src_port_map[make_pair(port, make_pair(src_id, dst))] = tag;
+  if (maxPacketCount < 0) {
+    cerr << "Negative message size is not valid in send_flow."
+         << "src_id, dst_id, message_size: " << src_id << " " << dst << " "
+         << maxPacketCount << "\n";
+    exit(1);
+  }
+
+  // Use the first source port as the parent key of this logical send event.
+  uint32_t parent_port = portNumber[src_id][dst];
   int pg = 3, dport = 100;
   flow_input.idx++;
 
@@ -134,19 +163,44 @@ void send_flow(int src_id, int dst, int maxPacketCount,
   MsgEvent send_event =
       MsgEvent(src_id, dst, 0, maxPacketCount, fun_arg, msg_handler);
   pair<MsgEventKey, int> send_event_key =
-      make_pair(make_pair(tag, make_pair(send_event.src_id, send_event.dst_id)),port) ;
+      make_pair(make_pair(tag, make_pair(send_event.src_id, send_event.dst_id)),
+                parent_port);
   sim_send_waiting_hash[send_event_key] = send_event;
 
-  // Create a queue pair and schedule within the ns3 simulator.
-  RdmaClientHelper clientHelper(
-      pg, serverAddress[src_id], serverAddress[dst], port, dport,
-      maxPacketCount,
-      has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src_id)][n.Get(dst)])
-              : 0,
-      global_t == 1 ? maxRtt : pairRtt[src_id][dst], msg_handler, fun_arg, tag,
-      src_id, dst);
-  ApplicationContainer appCon = clientHelper.Install(n.Get(src_id));
-  appCon.Start(Time(0));
+  // Strip one logical send into multiple QPs so a single sim_send can use
+  // split links (weighted ECMP alone is per-flow, not per-byte).
+  const uint32_t kSubflowsPerUplinkSlot = 16;
+  const uint32_t kMaxSubflowsPerSend = 64;
+  uint32_t total_bytes = static_cast<uint32_t>(maxPacketCount);
+  uint32_t split_count = 1;
+  if (total_bytes > 0) {
+    split_count = std::max(get_host_uplink_slots(src_id), get_host_uplink_slots(dst));
+    if (split_count > 1) {
+      split_count *= kSubflowsPerUplinkSlot;
+    }
+    split_count = std::min(split_count, kMaxSubflowsPerSend);
+    split_count = std::min(split_count, total_bytes);
+  }
+
+  uint32_t base_chunk_size = total_bytes / split_count;
+  uint32_t remainder = total_bytes % split_count;
+
+  for (uint32_t i = 0; i < split_count; i++) {
+    uint32_t chunk_size = base_chunk_size + (i < remainder ? 1 : 0);
+    uint32_t subflow_port = portNumber[src_id][dst]++;
+    sender_src_port_map[make_pair(subflow_port, make_pair(src_id, dst))] = {
+        tag, static_cast<int>(parent_port)};
+
+    RdmaClientHelper clientHelper(
+        pg, serverAddress[src_id], serverAddress[dst], subflow_port, dport,
+        chunk_size,
+        has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src_id)][n.Get(dst)])
+                : 0,
+        global_t == 1 ? maxRtt : pairRtt[src_id][dst], msg_handler, fun_arg,
+        tag, src_id, dst);
+    ApplicationContainer appCon = clientHelper.Install(n.Get(src_id));
+    appCon.Start(Time(0));
+  }
 }
 
 // notify_receiver_receive_data looks at whether the System layer has issued
@@ -206,7 +260,8 @@ void notify_sender_sending_finished(int src_id, int dst_id, int message_size,
                                     int tag, int src_port) {
   // Lookup the send_event registered at send_flow().
   pair<MsgEventKey, int> send_event_key = make_pair(make_pair(tag, make_pair(src_id, dst_id)), src_port);
-  if (sim_send_waiting_hash.find(send_event_key) == sim_send_waiting_hash.end()) {
+  auto send_event_it = sim_send_waiting_hash.find(send_event_key);
+  if (send_event_it == sim_send_waiting_hash.end()) {
     cerr << "Cannot find send_event in sent_hash. Something is wrong."
          << "tag, src_id, dst_id: " << tag << " " << src_id << " " << dst_id
          << "\n";
@@ -215,16 +270,21 @@ void notify_sender_sending_finished(int src_id, int dst_id, int message_size,
 
   // Verify that the (ns3 identified) sent message size matches what was
   // expected by the system layer.
-  MsgEvent send_event = sim_send_waiting_hash[send_event_key];
-  if (send_event.remaining_msg_bytes != message_size) {
+  MsgEvent send_event = send_event_it->second;
+  if (message_size > send_event.remaining_msg_bytes) {
     cerr << "The message size does not match what is expected. Something is "
             "wrong."
-         << "tag, src_id, dst_id, expected msg_bytes, actual msg_bytes: " << tag
-         << " " << src_id << " " << dst_id << " "
-         << send_event.remaining_msg_bytes << " " << message_size << "\n";
+         << "tag, src_id, dst_id, remaining msg_bytes, actual msg_bytes: " << tag
+         << " " << src_id << " " << dst_id << " " << send_event.remaining_msg_bytes
+         << " " << message_size << "\n";
     exit(1);
   }
-  sim_send_waiting_hash.erase(send_event_key);
+  send_event.remaining_msg_bytes -= message_size;
+  if (send_event.remaining_msg_bytes == 0) {
+    sim_send_waiting_hash.erase(send_event_it);
+  } else {
+    send_event_it->second = send_event;
+  }
 
   // Add to the number of total bytes sent.
   if (node_to_bytes_sent_map.find(make_pair(src_id, 0)) == node_to_bytes_sent_map.end()) {
@@ -232,7 +292,9 @@ void notify_sender_sending_finished(int src_id, int dst_id, int message_size,
   } else {
     node_to_bytes_sent_map[make_pair(src_id, 0)] += message_size;
   }
-  send_event.callHandler();
+  if (send_event.remaining_msg_bytes == 0) {
+    send_event.callHandler();
+  }
 }
 
 void qp_finish_print_log(FILE *fout, Ptr<RdmaQueuePair> q) {
@@ -266,16 +328,18 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
   rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->m_pg, q->sport);
 
   // Identify the tag of this message.
-  if (sender_src_port_map.find(make_pair(q->sport, make_pair(sid, did))) ==
-      sender_src_port_map.end()) {
+  auto flow_meta_it = sender_src_port_map.find(make_pair(q->sport, make_pair(sid, did)));
+  if (flow_meta_it == sender_src_port_map.end()) {
     cout << "could not find the tag, there must be something wrong" << endl;
     exit(-1);
   }
-  int tag = sender_src_port_map[make_pair(q->sport, make_pair(sid, did))];
-  sender_src_port_map.erase(make_pair(q->sport, make_pair(sid, did)));
+  SenderFlowMetadata flow_meta = flow_meta_it->second;
+  sender_src_port_map.erase(flow_meta_it);
+  int tag = flow_meta.tag;
 
   // Let sender knows that the flow has finished.
-  notify_sender_sending_finished(sid, did, q->m_size, tag, q->sport);
+  notify_sender_sending_finished(sid, did, q->m_size, tag,
+                                 flow_meta.parent_src_port);
 
   // Let receiver knows that it has received packets.
   notify_receiver_receive_data(sid, did, q->m_size, tag);
