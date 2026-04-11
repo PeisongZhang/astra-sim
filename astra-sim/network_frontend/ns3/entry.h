@@ -90,17 +90,9 @@ struct SenderFlowMetadata {
 };
 map<pair<int, pair<int, int>>, SenderFlowMetadata> sender_src_port_map;
 
-// NodeHash is used to count how many bytes were sent/received by this node.
-// Refer to sim_finish().
-//   - key: Pair <node_id, send/receive>. Where 'send/receive' indicates if the
-//   value is for send or receive
-//   - value: Number of bytes this node has sent (if send/receive is 0) and
-//   received (if send/receive is 1)
-map<pair<int, int>, int> node_to_bytes_sent_map;
-
 // SentHash stores a MsgEvent for sim_send events and its callback handler.
-//   - key: A pair of <MsgEventKey, port_id>. 
-//          A single collective phase can be split into multiple sim_send messages, which all have the same MsgEventKey. 
+//   - key: A pair of <MsgEventKey, port_id>.
+//          A single collective phase can be split into multiple sim_send messages, which all have the same MsgEventKey.
 //          TODO: Adding port_id as key is a hacky solution. The real solution would be to split this map, similar to sim_recv_waiting_hash and received_msg_standby_hash.
 //   - value: A MsgEvent instance that indicates that Sys layer is waiting for a
 //   send event to finish
@@ -157,7 +149,6 @@ void send_flow(int src_id, int dst, int maxPacketCount,
   // Use the first source port as the parent key of this logical send event.
   uint32_t parent_port = portNumber[src_id][dst];
   int pg = 3, dport = 100;
-  flow_input.idx++;
 
   // Create a MsgEvent instance and register callback function.
   MsgEvent send_event =
@@ -213,46 +204,43 @@ void notify_receiver_receive_data(int src_id, int dst_id, int message_size,
                                   int tag) {
 
   MsgEventKey recv_expect_event_key = make_pair(tag, make_pair(src_id, dst_id));
-
-  if (sim_recv_waiting_hash.find(recv_expect_event_key) != sim_recv_waiting_hash.end()) {
+  auto recv_waiting_it = sim_recv_waiting_hash.find(recv_expect_event_key);
+  if (recv_waiting_it != sim_recv_waiting_hash.end()) {
     // The Sys object is waiting for packets to arrive.
-    MsgEvent recv_expect_event = sim_recv_waiting_hash[recv_expect_event_key];
+    MsgEvent &recv_expect_event = recv_waiting_it->second;
     if (message_size == recv_expect_event.remaining_msg_bytes) {
       // We received exactly the amount of data what Sys object was expecting.
-      sim_recv_waiting_hash.erase(recv_expect_event_key);
-      recv_expect_event.callHandler();
+      MsgEvent completed_event = recv_expect_event;
+      sim_recv_waiting_hash.erase(recv_waiting_it);
+      completed_event.callHandler();
     } else if (message_size > recv_expect_event.remaining_msg_bytes) {
-      // We received more packets than the Sys object is expecting.
-      // Place task in received_msg_standby_hash and wait for Sys object to issue more sim_recv
-      // calls. Call callback handler for the amount Sys object was waiting for.
-      received_msg_standby_hash[recv_expect_event_key] =
-          message_size - recv_expect_event.remaining_msg_bytes;
-      sim_recv_waiting_hash.erase(recv_expect_event_key);
-      recv_expect_event.callHandler();
+      int standby_bytes = message_size - recv_expect_event.remaining_msg_bytes;
+      auto standby_it = received_msg_standby_hash.find(recv_expect_event_key);
+      if (standby_it == received_msg_standby_hash.end()) {
+        received_msg_standby_hash.emplace(recv_expect_event_key, standby_bytes);
+      } else {
+        standby_it->second += standby_bytes;
+      }
+      MsgEvent completed_event = recv_expect_event;
+      sim_recv_waiting_hash.erase(recv_waiting_it);
+      completed_event.callHandler();
     } else {
       // There are still packets to arrive.
       // Reduce the number of packets we are waiting for. Do not call callback
       // handler.
       recv_expect_event.remaining_msg_bytes -= message_size;
-      sim_recv_waiting_hash[recv_expect_event_key] = recv_expect_event;
     }
   } else {
     // The Sys object is not yet waiting for packets to arrive.
-    if (received_msg_standby_hash.find(recv_expect_event_key) == received_msg_standby_hash.end()) {
+    auto standby_it = received_msg_standby_hash.find(recv_expect_event_key);
+    if (standby_it == received_msg_standby_hash.end()) {
       // Place task in received_msg_standby_hash and wait for Sys object to issue more sim_recv
       // calls.
-      received_msg_standby_hash[recv_expect_event_key] = message_size;
+      received_msg_standby_hash.emplace(recv_expect_event_key, message_size);
     } else {
       // Sys object is still waiting. Add number of bytes we are waiting for.
-      received_msg_standby_hash[recv_expect_event_key] += message_size;
+      standby_it->second += message_size;
     }
-  }
-
-  // Add to the number of total bytes received.
-  if (node_to_bytes_sent_map.find(make_pair(dst_id, 1)) == node_to_bytes_sent_map.end()) {
-    node_to_bytes_sent_map[make_pair(dst_id, 1)] = message_size;
-  } else {
-    node_to_bytes_sent_map[make_pair(dst_id, 1)] += message_size;
   }
 }
 
@@ -270,7 +258,7 @@ void notify_sender_sending_finished(int src_id, int dst_id, int message_size,
 
   // Verify that the (ns3 identified) sent message size matches what was
   // expected by the system layer.
-  MsgEvent send_event = send_event_it->second;
+  MsgEvent &send_event = send_event_it->second;
   if (message_size > send_event.remaining_msg_bytes) {
     cerr << "The message size does not match what is expected. Something is "
             "wrong."
@@ -281,19 +269,9 @@ void notify_sender_sending_finished(int src_id, int dst_id, int message_size,
   }
   send_event.remaining_msg_bytes -= message_size;
   if (send_event.remaining_msg_bytes == 0) {
+    MsgEvent completed_event = send_event;
     sim_send_waiting_hash.erase(send_event_it);
-  } else {
-    send_event_it->second = send_event;
-  }
-
-  // Add to the number of total bytes sent.
-  if (node_to_bytes_sent_map.find(make_pair(src_id, 0)) == node_to_bytes_sent_map.end()) {
-    node_to_bytes_sent_map[make_pair(src_id, 0)] = message_size;
-  } else {
-    node_to_bytes_sent_map[make_pair(src_id, 0)] += message_size;
-  }
-  if (send_event.remaining_msg_bytes == 0) {
-    send_event.callHandler();
+    completed_event.callHandler();
   }
 }
 
@@ -311,7 +289,6 @@ void qp_finish_print_log(FILE *fout, Ptr<RdmaQueuePair> q) {
   fprintf(fout, "%08x %08x %u %u %lu %lu %lu %lu\n", q->sip.Get(), q->dip.Get(),
           q->sport, q->dport, q->m_size, q->startTime.GetTimeStep(),
           (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct);
-  fflush(fout);
 }
 
 // qp_finish is triggered by NS3 to indicate that an RDMA queue pair has
@@ -320,7 +297,9 @@ void qp_finish_print_log(FILE *fout, Ptr<RdmaQueuePair> q) {
 // common.h::SetupNetwork().
 void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
   uint32_t sid = ip_to_node_id(q->sip), did = ip_to_node_id(q->dip);
-  qp_finish_print_log(fout, q);
+  if (fout != nullptr) {
+    qp_finish_print_log(fout, q);
+  }
 
   // remove rxQp from the receiver.
   Ptr<Node> dstNode = n.Get(did);
@@ -333,22 +312,18 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     cout << "could not find the tag, there must be something wrong" << endl;
     exit(-1);
   }
-  SenderFlowMetadata flow_meta = flow_meta_it->second;
+  int tag = flow_meta_it->second.tag;
+  int parent_src_port = flow_meta_it->second.parent_src_port;
   sender_src_port_map.erase(flow_meta_it);
-  int tag = flow_meta.tag;
 
   // Let sender knows that the flow has finished.
-  notify_sender_sending_finished(sid, did, q->m_size, tag,
-                                 flow_meta.parent_src_port);
+  notify_sender_sending_finished(sid, did, q->m_size, tag, parent_src_port);
 
   // Let receiver knows that it has received packets.
   notify_receiver_receive_data(sid, did, q->m_size, tag);
 }
 
-int setup_ns3_simulation(string network_configuration) {
-  if (!ReadConf(network_configuration))
-    return -1;
-
+int setup_ns3_simulation() {
   SetConfig();
 
   if (!SetupNetwork(qp_finish)) {

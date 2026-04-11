@@ -459,7 +459,13 @@ void Sys::exit_sim_loop(string msg) {
 void Sys::call(EventType type, CallData* data) {}
 
 void Sys::call_events() {
-    for (auto& callable : event_queue[Sys::boostedTick()]) {
+    Tick current_tick = Sys::boostedTick();
+    auto current_tick_it = event_queue.find(current_tick);
+    if (current_tick_it == event_queue.end()) {
+        return;
+    }
+
+    for (auto& callable : current_tick_it->second) {
         try {
             pending_events--;
             (get<0>(callable))->call(get<1>(callable), get<2>(callable));
@@ -469,10 +475,7 @@ void Sys::call_events() {
                              e.what());
         }
     }
-    if (event_queue[Sys::boostedTick()].size() > 0) {
-        event_queue[Sys::boostedTick()].clear();
-    }
-    event_queue.erase(Sys::boostedTick());
+    event_queue.erase(current_tick_it);
 }
 
 void Sys::register_event(Callable* callable,
@@ -486,15 +489,14 @@ void Sys::try_register_event(Callable* callable,
                              EventType event,
                              CallData* callData,
                              Tick& delta_cycles) {
-    bool should_schedule = false;
     auto event_time = Sys::boostedTick() + delta_cycles;
-    if (event_queue.find(event_time) == event_queue.end()) {
-        list<tuple<Callable*, EventType, CallData*>> tmp;
-        event_queue[event_time] = tmp;
-        should_schedule = true;
-    }
-    event_queue[event_time].push_back(make_tuple(callable, event, callData));
-    if (should_schedule) {
+    auto event_it = event_queue.find(event_time);
+    if (event_it == event_queue.end()) {
+        event_it =
+            event_queue.emplace(
+                           event_time,
+                           list<tuple<Callable*, EventType, CallData*>>())
+                .first;
         timespec_t tmp;
         tmp.time_res = NS;
         tmp.time_val = delta_cycles;
@@ -503,6 +505,7 @@ void Sys::try_register_event(Callable* callable,
         data->sys_id = id;
         comm_NI->sim_schedule(tmp, &Sys::handleEvent, data);
     }
+    event_it->second.push_back(make_tuple(callable, event, callData));
     delta_cycles = 0;
     pending_events++;
     return;

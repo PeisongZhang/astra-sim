@@ -81,20 +81,6 @@ class ASTRASimNetwork : public AstraSim::AstraNetworkAPI {
     ~ASTRASimNetwork() {}
 
     void sim_notify_finished() {
-        // Output to file instead of stdout
-        /*
-        for (auto it = node_to_bytes_sent_map.begin();
-             it != node_to_bytes_sent_map.end(); it++) {
-            pair<int, int> p = it->first;
-            if (p.second == 0) {
-                cout << "All data sent from node " << p.first << " is "
-                     << it->second << "\n";
-            } else {
-                cout << "All data received by node " << p.first << " is "
-                     << it->second << "\n";
-            }
-        }
-        */
         completion_tracker_->mark_rank_as_finished(rank);
         return;
     }
@@ -148,43 +134,40 @@ class ASTRASimNetwork : public AstraSim::AstraNetworkAPI {
         MsgEventKey recv_event_key =
             make_pair(tag, make_pair(recv_event.src_id, recv_event.dst_id));
 
-        if (received_msg_standby_hash.find(recv_event_key) !=
-            received_msg_standby_hash.end()) {
+        auto standby_it = received_msg_standby_hash.find(recv_event_key);
+        if (standby_it != received_msg_standby_hash.end()) {
             // 1) ns3 has already received some message before sim_recv is
             // called.
-            int received_msg_bytes = received_msg_standby_hash[recv_event_key];
+            int received_msg_bytes = standby_it->second;
             if (received_msg_bytes == message_size) {
                 // 1-1) The received message size is same as what we expect.
                 // Exit.
-                received_msg_standby_hash.erase(recv_event_key);
+                received_msg_standby_hash.erase(standby_it);
                 recv_event.callHandler();
             } else if (received_msg_bytes > message_size) {
                 // 1-2) The node received more than expected.
                 // Do trigger the callback handler for this message, but wait
                 // for Sys layer to call sim_recv for more messages.
-                received_msg_standby_hash[recv_event_key] =
-                    received_msg_bytes - message_size;
+                standby_it->second = received_msg_bytes - message_size;
                 recv_event.callHandler();
             } else {
                 // 1-3) The node received less than what we expected.
                 // Reduce the number of bytes we are waiting to receive.
-                received_msg_standby_hash.erase(recv_event_key);
+                received_msg_standby_hash.erase(standby_it);
                 recv_event.remaining_msg_bytes -= received_msg_bytes;
                 sim_recv_waiting_hash[recv_event_key] = recv_event;
             }
         } else {
             // 2) ns3 has not yet received anything.
-            if (sim_recv_waiting_hash.find(recv_event_key) ==
-                sim_recv_waiting_hash.end()) {
+            auto recv_waiting_it = sim_recv_waiting_hash.find(recv_event_key);
+            if (recv_waiting_it == sim_recv_waiting_hash.end()) {
                 // 2-1) We have not been expecting anything.
                 sim_recv_waiting_hash[recv_event_key] = recv_event;
             } else {
                 // 2-2) We have already been expecting something.
                 // Increment the number of bytes we are waiting to receive.
-                int expecting_msg_bytes =
-                    sim_recv_waiting_hash[recv_event_key].remaining_msg_bytes;
-                recv_event.remaining_msg_bytes += expecting_msg_bytes;
-                sim_recv_waiting_hash[recv_event_key] = recv_event;
+                recv_waiting_it->second.remaining_msg_bytes +=
+                    recv_event.remaining_msg_bytes;
             }
         }
         return 0;
@@ -202,10 +185,12 @@ string memory_configuration;
 string comm_group_configuration = "empty";
 string logical_topology_configuration;
 string logging_configuration = "empty";
+string ns3_scheduler_override;
 int num_queues_per_dim = 1;
 double comm_scale = 1;
 double injection_scale = 1;
 bool rendezvous_protocol = false;
+int enable_ns3_component_log_override = -1;
 auto logical_dims = vector<int>();
 int num_npus = 1;
 auto queues_per_dim = vector<int>();
@@ -267,18 +252,38 @@ void parse_args(int argc, char* argv[]) {
     cmd.AddValue("injection-scale", "Injection scale", injection_scale);
     cmd.AddValue("rendezvous-protocol", "Whether to enable rendezvous protocol",
                  rendezvous_protocol);
+    cmd.AddValue("ns3-scheduler",
+                 "Override ns-3 SchedulerType (for example ns3::HeapScheduler).",
+                 ns3_scheduler_override);
+    cmd.AddValue("enable-ns3-component-log",
+                 "Enable ns-3 component logs for OnOffApplication and PacketSink.",
+                 enable_ns3_component_log_override);
 
     cmd.Parse(argc, argv);
 }
 
 int main(int argc, char* argv[]) {
-    LogComponentEnable("OnOffApplication", LOG_INFO);
-    LogComponentEnable("PacketSink", LOG_INFO);
-
     cout << "ASTRA-sim + NS3" << endl;
 
     // Read network config and find logical dims.
     parse_args(argc, argv);
+    if (!ReadConf(network_configuration)) {
+        std::cerr << "Fail to read ns3 network configuration." << std::endl;
+        return -1;
+    }
+    if (!ns3_scheduler_override.empty()) {
+        ns3_scheduler = ns3_scheduler_override;
+    }
+    if (enable_ns3_component_log_override >= 0) {
+        enable_ns3_component_log = enable_ns3_component_log_override;
+    }
+    if (!ns3_scheduler.empty()) {
+        GlobalValue::Bind("SchedulerType", StringValue(ns3_scheduler));
+    }
+    if (enable_ns3_component_log != 0) {
+        LogComponentEnable("OnOffApplication", LOG_INFO);
+        LogComponentEnable("PacketSink", LOG_INFO);
+    }
     AstraSim::LoggerFactory::init(logging_configuration);
     read_logical_topo_config(logical_topology_configuration, logical_dims);
 
@@ -299,7 +304,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Initialize ns3 simulation.
-    if (auto ok = setup_ns3_simulation(network_configuration); ok == -1) {
+    if (auto ok = setup_ns3_simulation(); ok == -1) {
         std::cerr << "Fail to setup ns3 simulation." << std::endl;
         return -1;
     }
