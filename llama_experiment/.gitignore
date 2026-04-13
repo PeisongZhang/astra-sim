@@ -1,0 +1,11 @@
+mix.tr
+flow.txt
+pfc.txt
+qlen.txt
+trace.txt
+fct.txt
+no_memory_expansion.json
+logical_topo.json
+*.npy
+workload/
+log/
