@@ -8,4 +8,5 @@ no_memory_expansion.json
 logical_topo.json
 *.npy
 workload/
+workload
 log/
