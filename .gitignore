@@ -31,3 +31,4 @@ build/astra_htsim/build/
 runs
 
 .venv/
+.serena/
