@@ -494,7 +494,7 @@ void Sys::sys_panic(string msg) {
 
 void Sys::exit_sim_loop(string msg) {
     auto logger = LoggerFactory::get_logger("system");
-    logger->warn(msg);
+    logger->info(msg);
 }
 
 void Sys::call(EventType type, CallData* data) {}
