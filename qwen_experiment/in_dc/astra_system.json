@@ -19,5 +19,11 @@
     "local-mem-bw": 1560,
     "boost-mode": 0,
     "roofline-enabled": 1,
-    "peak-perf": 312
+    "peak-perf": 312,
+    "hardware-resource-capacity": {
+        "cpu": 1,
+        "gpu-comp": 1,
+        "gpu-comm": 1,
+        "gpu-recv": 64
+    }
 }

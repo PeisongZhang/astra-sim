@@ -22,6 +22,7 @@ class RecvPacketEventHandlerData : public BasicEventHandlerData {
                                EventType event,
                                int vnet,
                                int stream_id);
+    ~RecvPacketEventHandlerData() override;
 
     Workload* workload;
     WorkloadLayerHandlerData* wlhd;

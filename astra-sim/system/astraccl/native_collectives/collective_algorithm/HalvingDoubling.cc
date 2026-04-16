@@ -186,7 +186,8 @@ void HalvingDoubling::reduce() {
 
 bool HalvingDoubling::iteratable() {
     if (stream_count == 0 &&
-        free_packets == (parallel_reduce * 1)) {  // && not_delivered==0
+        free_packets == (parallel_reduce * 1) &&
+        total_packets_received == total_packets_sent) {
         exit();
         return false;
     }

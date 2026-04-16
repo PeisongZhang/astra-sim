@@ -28,3 +28,7 @@ RecvPacketEventHandlerData::RecvPacketEventHandlerData(
     this->message_end = true;
     ready_time = Sys::boostedTick();
 }
+
+RecvPacketEventHandlerData::~RecvPacketEventHandlerData() {
+    delete wlhd;
+}

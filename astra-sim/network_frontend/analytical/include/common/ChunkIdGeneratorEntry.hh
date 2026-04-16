@@ -20,35 +20,15 @@ class ChunkIdGeneratorEntry {
     ChunkIdGeneratorEntry() noexcept;
 
     /**
-     * Get the chunk id for sim_send() call.
+     * Allocate a new chunk id for the next unmatched send/recv operation.
      *
-     * @return chunk id for sim_send() call
+     * @return newly allocated chunk id
      */
-    [[nodiscard]] int get_send_id() const noexcept;
-
-    /**
-     * Get the chunk id for sim_recv() call.
-     *
-     * @return chunk id for sim_recv() call
-     */
-    [[nodiscard]] int get_recv_id() const noexcept;
-
-    /**
-     * Increment the chunk id for sim_send() call.
-     */
-    void increment_send_id() noexcept;
-
-    /**
-     * Increment the chunk id for sim_recv() call.
-     */
-    void increment_recv_id() noexcept;
+    [[nodiscard]] int allocate_id() noexcept;
 
   private:
-    /// current available chunk id for sim_send() call
-    int send_id;
-
-    /// current available chunk id for sim_recv() call
-    int recv_id;
+    /// next chunk id to be allocated for this key
+    int next_id;
 };
 
 }  // namespace AstraSimAnalytical

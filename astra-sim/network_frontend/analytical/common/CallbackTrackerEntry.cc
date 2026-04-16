@@ -50,6 +50,7 @@ void CallbackTrackerEntry::invoke_send_handler() noexcept {
 
     // invoke send event
     send_event.value().invoke_event();
+    send_event.reset();
 }
 
 void CallbackTrackerEntry::invoke_recv_handler() noexcept {
@@ -57,4 +58,27 @@ void CallbackTrackerEntry::invoke_recv_handler() noexcept {
 
     // invoke recv event
     recv_event.value().invoke_event();
+    recv_event.reset();
+}
+
+void CallbackTrackerEntry::cleanup_handlers(
+    void (*cleanup_arg)(CallbackArg)) noexcept {
+    assert(cleanup_arg != nullptr);
+
+    if (send_event.has_value()) {
+        cleanup_arg(send_event.value().get_handler_arg().second);
+        send_event.reset();
+    }
+    if (recv_event.has_value()) {
+        cleanup_arg(recv_event.value().get_handler_arg().second);
+        recv_event.reset();
+    }
+}
+
+bool CallbackTrackerEntry::has_send_handler() const noexcept {
+    return send_event.has_value();
+}
+
+bool CallbackTrackerEntry::has_recv_handler() const noexcept {
+    return recv_event.has_value();
 }

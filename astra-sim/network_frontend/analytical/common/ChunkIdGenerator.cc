@@ -33,9 +33,7 @@ int ChunkIdGenerator::create_send_chunk_id(
         entry = chunk_id_map.emplace(key, ChunkIdGeneratorEntry()).first;
     }
 
-    // increment id and return
-    entry->second.increment_send_id();
-    return entry->second.get_send_id();
+    return entry->second.allocate_id();
 }
 
 int ChunkIdGenerator::create_recv_chunk_id(
@@ -59,7 +57,5 @@ int ChunkIdGenerator::create_recv_chunk_id(
         entry = chunk_id_map.emplace(key, ChunkIdGeneratorEntry()).first;
     }
 
-    // if key exists, increment send id and return
-    entry->second.increment_recv_id();
-    return entry->second.get_recv_id();
+    return entry->second.allocate_id();
 }

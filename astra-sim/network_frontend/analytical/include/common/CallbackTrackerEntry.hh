@@ -71,6 +71,17 @@ class CallbackTrackerEntry {
      */
     void invoke_recv_handler() noexcept;
 
+    /**
+     * Release any registered callbacks without invoking them.
+     *
+     * @param cleanup_arg cleanup function for callback arguments
+     */
+    void cleanup_handlers(void (*cleanup_arg)(CallbackArg)) noexcept;
+
+    [[nodiscard]] bool has_send_handler() const noexcept;
+
+    [[nodiscard]] bool has_recv_handler() const noexcept;
+
   private:
     /// sim_send() callback event
     std::optional<Event> send_event;

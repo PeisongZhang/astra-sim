@@ -24,14 +24,16 @@ class BaseStream : public Callable, public StreamStat {
   public:
     BaseStream(int stream_id,
                Sys* owner,
-               std::list<CollectivePhase> phases_to_go);
-    virtual ~BaseStream() = default;
+               std::list<CollectivePhase> phases_to_go,
+               int synchronization_target);
+    virtual ~BaseStream();
 
     void changeState(StreamState state);
     virtual void consume(RecvPacketEventHandlerData* message) = 0;
     virtual void init() = 0;
 
     static std::map<int, int> synchronizer;
+    static std::map<int, int> synchronizer_target;
     static std::map<int, int> ready_counter;
     static std::map<int, std::list<BaseStream*>> suspended_streams;
     int stream_id;

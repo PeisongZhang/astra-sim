@@ -4,8 +4,11 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/system/BaseStream.hh"
 #include "common/CmdLineParser.hh"
 #include "congestion_aware/CongestionAwareNetworkApi.hh"
+#include <iostream>
+#include <cstdlib>
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_aware/Helper.h>
@@ -17,6 +20,93 @@ using namespace AstraSimAnalytical;
 using namespace AstraSimAnalyticalCongestionAware;
 using namespace NetworkAnalytical;
 using namespace NetworkAnalyticalCongestionAware;
+
+namespace {
+
+bool should_dump_stuck_state() noexcept {
+    const char* const raw = std::getenv("ASTRA_ANALYTICAL_DEBUG_STUCK");
+    return raw != nullptr && *raw != '\0' && std::string(raw) != "0";
+}
+
+void dump_stuck_state(const std::vector<Sys*>& systems) noexcept {
+    if (!should_dump_stuck_state()) {
+        return;
+    }
+
+    for (auto* const system : systems) {
+        if (system == nullptr || system->workload == nullptr ||
+            system->workload->is_finished) {
+            continue;
+        }
+
+        std::cerr << "[analytical-stuck] sys=" << system->id
+                  << " ready_list=" << system->ready_list.size()
+                  << " total_running=" << system->total_running_streams
+                  << " first_phase=" << system->first_phase_streams;
+        if (!system->ready_list.empty()) {
+            const auto* const front = system->ready_list.front();
+            std::cerr << " front_stream=" << front->stream_id
+                      << " front_queue=" << front->current_queue_id;
+            std::cerr << " ready_streams=[";
+            bool first = true;
+            for (const auto* const stream : system->ready_list) {
+                if (!first) {
+                    std::cerr << ",";
+                }
+                first = false;
+                std::cerr << stream->stream_id;
+            }
+            std::cerr << "]";
+        }
+        std::cerr << std::endl;
+    }
+}
+
+bool schedule_stranded_ready_streams(
+    const std::vector<Sys*>& systems) noexcept {
+    bool scheduled_any = false;
+
+    for (auto* const system : systems) {
+        if (system == nullptr || system->ready_list.empty() ||
+            system->total_running_streams != 0) {
+            continue;
+        }
+
+        if (system->ready_list.front()->current_queue_id != -1) {
+            continue;
+        }
+
+        const auto running_before = system->total_running_streams;
+        system->ask_for_schedule(static_cast<int>(system->ready_list.size()));
+        if (system->total_running_streams > running_before) {
+            scheduled_any = true;
+        }
+    }
+
+    return scheduled_any;
+}
+
+bool issue_stranded_dependency_free_nodes(
+    const std::vector<Sys*>& systems) noexcept {
+    bool issued_any = false;
+
+    for (auto* const system : systems) {
+        if (system == nullptr || system->workload == nullptr ||
+            system->workload->is_finished) {
+            continue;
+        }
+
+        const auto ready_before = system->ready_list.size();
+        system->workload->issue_dep_free_nodes();
+        if (system->ready_list.size() > ready_before) {
+            issued_any = true;
+        }
+    }
+
+    return issued_any;
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments
@@ -96,9 +186,29 @@ int main(int argc, char* argv[]) {
     }
 
     // run simulation
-    while (!event_queue->finished()) {
-        event_queue->proceed();
+    while (true) {
+        while (!event_queue->finished()) {
+            event_queue->proceed();
+        }
+
+        const auto issued_any = issue_stranded_dependency_free_nodes(systems);
+        const auto scheduled_any = schedule_stranded_ready_streams(systems);
+        if (!issued_any && !scheduled_any) {
+            dump_stuck_state(systems);
+            break;
+        }
     }
+
+    const auto pending_callbacks = CommonNetworkApi::describe_pending_callbacks();
+    if (!pending_callbacks.empty()) {
+        std::cerr << "[analytical] Pending callbacks before cleanup: "
+                  << pending_callbacks.size() << std::endl;
+        for (const auto& entry : pending_callbacks) {
+            std::cerr << "[analytical]   " << entry << std::endl;
+        }
+    }
+
+    CommonNetworkApi::cleanup_pending_callbacks();
 
     for (auto it : systems) {
         delete it;
@@ -107,5 +217,5 @@ int main(int argc, char* argv[]) {
 
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();
-    return 0;
+    return pending_callbacks.empty() ? 0 : 2;
 }

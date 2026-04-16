@@ -10,6 +10,7 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/common/Logging.hh"
 #include <cstdint>
+#include <limits>
 
 #include "extern/graph_frontend/chakra/src/feeder_v3/et_feeder.h"
 
@@ -17,12 +18,18 @@ namespace AstraSim {
 
 class HardwareResource {
   public:
-    HardwareResource(uint32_t num_npus, int sys_id = -1);
+    HardwareResource(uint32_t max_in_flight_cpu_ops,
+                     uint32_t max_in_flight_gpu_comp_ops,
+                     uint32_t max_in_flight_gpu_comm_ops,
+                     uint32_t max_in_flight_gpu_recv_ops =
+                         std::numeric_limits<uint32_t>::max(),
+                     int sys_id = -1);
     ~HardwareResource() {
         auto logger = LoggerFactory::get_logger("HardwareResource");
         if (this->num_in_flight_cpu_ops != 0 ||
             this->num_in_flight_gpu_comm_ops != 0 ||
-            this->num_in_flight_gpu_comp_ops != 0) {
+            this->num_in_flight_gpu_comp_ops != 0 ||
+            this->num_in_flight_gpu_recv_ops != 0) {
             logger->critical(
                 "!!!Hardware Resource sys.id={} has unreleased nodes!!!",
                 this->sys_id);
@@ -36,6 +43,9 @@ class HardwareResource {
         for (auto node_id : gpu_comms_node) {
             logger->critical("GPU comm node id: {}", node_id);
         }
+        for (auto node_id : gpu_recvs_node) {
+            logger->critical("GPU recv node id: {}", node_id);
+        }
     }
     void occupy(const std::shared_ptr<Chakra::FeederV3::ETFeederNode> node);
     void release(const std::shared_ptr<Chakra::FeederV3::ETFeederNode> node);
@@ -46,17 +56,23 @@ class HardwareResource {
     std::unordered_set<uint64_t> cpu_ops_node;
     std::unordered_set<uint64_t> gpu_ops_node;
     std::unordered_set<uint64_t> gpu_comms_node;
+    std::unordered_set<uint64_t> gpu_recvs_node;
 
     const int sys_id;
 
-    const uint32_t num_npus;
+    const uint32_t max_in_flight_cpu_ops;
+    const uint32_t max_in_flight_gpu_comp_ops;
+    const uint32_t max_in_flight_gpu_comm_ops;
+    const uint32_t max_in_flight_gpu_recv_ops;
     uint32_t num_in_flight_cpu_ops;
     uint32_t num_in_flight_gpu_comp_ops;
     uint32_t num_in_flight_gpu_comm_ops;
+    uint32_t num_in_flight_gpu_recv_ops;
 
     uint64_t num_cpu_ops;
     uint64_t num_gpu_ops;
     uint64_t num_gpu_comms;
+    uint64_t num_gpu_recvs;
 
     uint64_t tics_cpu_ops;
     uint64_t tics_gpu_ops;

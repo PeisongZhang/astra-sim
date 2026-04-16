@@ -22,6 +22,7 @@ class CommunicatorGroup {
     // For a detailed description on why we need `workload_node_id`,
     // Refer to the comment titled [operation specific custom collective].
     CollectivePlan* get_collective_plan(ComType comm_type, uint64_t workload_node_id = -1);
+    int get_id() const;
     int get_position_in_group();
     void set_id(int id);
     ~CommunicatorGroup();

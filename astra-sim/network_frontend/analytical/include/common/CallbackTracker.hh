@@ -8,6 +8,8 @@ LICENSE file in the root directory of this source tree.
 #include "common/CallbackTrackerEntry.hh"
 #include "common/ChunkIdGenerator.hh"
 #include <map>
+#include <string>
+#include <vector>
 
 namespace AstraSimAnalytical {
 
@@ -70,6 +72,42 @@ class CallbackTracker {
                    int dest,
                    ChunkSize chunk_size,
                    int chunk_id) noexcept;
+
+    /**
+     * Find the earliest recv-posted entry for the key that is still waiting
+     * for a send callback to be registered.
+     *
+     * @return matching chunk id if found, std::nullopt otherwise
+     */
+    [[nodiscard]] std::optional<int> find_chunk_waiting_for_send(
+        int tag,
+        int src,
+        int dest,
+        ChunkSize chunk_size) noexcept;
+
+    /**
+     * Find the earliest send-issued entry for the key that is still waiting
+     * for a recv callback to be registered.
+     *
+     * This also matches entries whose transmission already finished before the
+     * recv was posted.
+     *
+     * @return matching chunk id if found, std::nullopt otherwise
+     */
+    [[nodiscard]] std::optional<int> find_chunk_waiting_for_recv(
+        int tag,
+        int src,
+        int dest,
+        ChunkSize chunk_size) noexcept;
+
+    /**
+     * Release all pending callbacks and clear the tracker.
+     *
+     * @param cleanup_arg cleanup function for callback arguments
+     */
+    void cleanup_pending_entries(void (*cleanup_arg)(CallbackArg)) noexcept;
+
+    [[nodiscard]] std::vector<std::string> describe_pending_entries() const noexcept;
 
   private:
     /// map from (tag, src, dest, chunk_size, chunk_id) tuple to

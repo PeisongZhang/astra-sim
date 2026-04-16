@@ -16,6 +16,7 @@ namespace AstraSim {
 class DataSet : public Callable, public StreamStat {
   public:
     DataSet(int total_streams);
+    ~DataSet();
     void set_notifier(Callable* layer, EventType event);
     void notify_stream_finished(StreamStat* data);
     void call(EventType event, CallData* data);

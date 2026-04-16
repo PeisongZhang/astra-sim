@@ -41,6 +41,14 @@ class CommonNetworkApi : public AstraNetworkAPI {
     static CallbackTracker& get_callback_tracker() noexcept;
 
     /**
+     * Release any pending send/recv callbacks that were never invoked.
+     */
+    static void cleanup_pending_callbacks() noexcept;
+
+    [[nodiscard]] static std::vector<std::string>
+    describe_pending_callbacks() noexcept;
+
+    /**
      * Callback to be invoked when a chunk arrives its destination.
      *
      * @param args arguments of the callback function

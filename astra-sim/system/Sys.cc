@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 #include "astra-sim/common/Logging.hh"
 #include "astra-sim/system/BaseStream.hh"
@@ -93,7 +94,7 @@ void Sys::SchedulerUnit::notify_stream_added_into_ready_list() {
         if (max > max_running_streams - this->sys->total_running_streams) {
             max = max_running_streams - this->sys->total_running_streams;
         }
-        sys->schedule(max);
+        sys->ask_for_schedule(max);
     }
     return;
 }
@@ -115,7 +116,7 @@ void Sys::SchedulerUnit::notify_stream_removed(int vnet, Tick running_time) {
         if (max > max_running_streams - this->sys->total_running_streams) {
             max = max_running_streams - this->sys->total_running_streams;
         }
-        sys->schedule(max);
+        sys->ask_for_schedule(max);
     }
     stream_pointer[vnet] = sys->active_Streams[vnet].begin();
     advance(stream_pointer[vnet], running_streams[vnet]);
@@ -157,6 +158,10 @@ Sys::Sys(int id,
     this->initialized = false;
 
     this->workload = nullptr;
+    this->max_in_flight_cpu_ops = 1;
+    this->max_in_flight_gpu_comp_ops = 1;
+    this->max_in_flight_gpu_comm_ops = 1;
+    this->max_in_flight_gpu_recv_ops = std::numeric_limits<uint32_t>::max();
 
     this->roofline_enabled = false;
     this->peak_perf = 0;
@@ -264,6 +269,18 @@ Sys::Sys(int id,
 }
 
 Sys::~Sys() {
+    for (auto* stream : ready_list) {
+        delete stream;
+    }
+    ready_list.clear();
+
+    for (auto& kv : active_Streams) {
+        for (auto* stream : kv.second) {
+            delete stream;
+        }
+    }
+    active_Streams.clear();
+
     if (roofline_enabled) {
         delete this->roofline;
     }
@@ -294,6 +311,10 @@ Sys::~Sys() {
 
     if (offline_greedy != nullptr) {
         delete offline_greedy;
+    }
+
+    if (collective_impl_lookup != nullptr) {
+        delete collective_impl_lookup;
     }
 
     bool shouldExit = true;
@@ -419,6 +440,26 @@ bool Sys::initialize_sys(string name) {
         }
     }
 
+    if (j.contains("hardware-resource-capacity")) {
+        const auto& hw = j["hardware-resource-capacity"];
+        if (!hw.is_object()) {
+            sys_panic(
+                "hardware-resource-capacity must be a JSON object in sys input file");
+        }
+        if (hw.contains("cpu")) {
+            this->max_in_flight_cpu_ops = hw["cpu"];
+        }
+        if (hw.contains("gpu-comp")) {
+            this->max_in_flight_gpu_comp_ops = hw["gpu-comp"];
+        }
+        if (hw.contains("gpu-comm")) {
+            this->max_in_flight_gpu_comm_ops = hw["gpu-comm"];
+        }
+        if (hw.contains("gpu-recv")) {
+            this->max_in_flight_gpu_recv_ops = hw["gpu-recv"];
+        }
+    }
+
     this->local_mem_trace_filename = "local_mem_trace";
     if (j.contains("local-mem-trace-filename")) {
         this->local_mem_trace_filename = j["local-mem-trace-filename"];
@@ -539,23 +580,27 @@ void Sys::handleEvent(void* arg) {
         MemEventHandlerData* mehd = (MemEventHandlerData*)ehd;
         if (mehd->workload) {
             mehd->workload->call(event, mehd->wlhd);
+            mehd->wlhd = nullptr;
         }
         delete mehd;
     } else if (event == EventType::PacketReceived) {
         RecvPacketEventHandlerData* rcehd = (RecvPacketEventHandlerData*)ehd;
         if (rcehd->workload) {
             rcehd->workload->call(event, rcehd->wlhd);
+            rcehd->wlhd = nullptr;
         }
         if (rcehd->owner) {
             rcehd->owner->consume(rcehd);
         }
         if (rcehd->custom_algorithm) {
             rcehd->custom_algorithm->call(event, rcehd->wlhd);
+            rcehd->wlhd = nullptr;
         }
         delete rcehd;
     } else if (event == EventType::PacketSent) {
         SendPacketEventHandlerData* sehd = (SendPacketEventHandlerData*)ehd;
         sehd->callable->call(EventType::PacketSent, sehd->wlhd);
+        sehd->wlhd = nullptr;
         delete sehd;
     }
 }
@@ -579,7 +624,8 @@ DataSet* Sys::generate_all_reduce(uint64_t size,
                                   vector<bool> involved_dimensions,
                                   CommunicatorGroup* communicator_group,
                                   int explicit_priority,
-                                  uint64_t workload_node_id) {
+                                  uint64_t workload_node_id,
+                                  uint64_t collective_instance_id) {
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_Reduce, workload_node_id);
@@ -593,7 +639,9 @@ DataSet* Sys::generate_all_reduce(uint64_t size,
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_Reduce, explicit_priority,
-            communicator_group);
+            communicator_group,
+            collective_instance_id == uint64_t(-1) ? workload_node_id
+                                                   : collective_instance_id);
     }
 }
 
@@ -601,7 +649,8 @@ DataSet* Sys::generate_all_to_all(uint64_t size,
                                   vector<bool> involved_dimensions,
                                   CommunicatorGroup* communicator_group,
                                   int explicit_priority,
-                                  uint64_t workload_node_id) {
+                                  uint64_t workload_node_id,
+                                  uint64_t collective_instance_id) {
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_to_All, workload_node_id);
@@ -615,7 +664,9 @@ DataSet* Sys::generate_all_to_all(uint64_t size,
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_to_All, explicit_priority,
-            communicator_group);
+            communicator_group,
+            collective_instance_id == uint64_t(-1) ? workload_node_id
+                                                   : collective_instance_id);
     }
 }
 
@@ -623,7 +674,8 @@ DataSet* Sys::generate_all_gather(uint64_t size,
                                   vector<bool> involved_dimensions,
                                   CommunicatorGroup* communicator_group,
                                   int explicit_priority,
-                                  uint64_t workload_node_id) {
+                                  uint64_t workload_node_id,
+                                  uint64_t collective_instance_id) {
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_Gather, workload_node_id);
@@ -637,7 +689,9 @@ DataSet* Sys::generate_all_gather(uint64_t size,
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_Gather, explicit_priority,
-            communicator_group);
+            communicator_group,
+            collective_instance_id == uint64_t(-1) ? workload_node_id
+                                                   : collective_instance_id);
     }
 }
 
@@ -645,7 +699,8 @@ DataSet* Sys::generate_reduce_scatter(uint64_t size,
                                       vector<bool> involved_dimensions,
                                       CommunicatorGroup* communicator_group,
                                       int explicit_priority,
-                                      uint64_t workload_node_id) {
+                                      uint64_t workload_node_id,
+                                      uint64_t collective_instance_id) {
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::Reduce_Scatter, workload_node_id);
@@ -659,7 +714,9 @@ DataSet* Sys::generate_reduce_scatter(uint64_t size,
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::Reduce_Scatter,
-            explicit_priority, communicator_group);
+            explicit_priority, communicator_group,
+            collective_instance_id == uint64_t(-1) ? workload_node_id
+                                                   : collective_instance_id);
     }
 }
 
@@ -670,7 +727,34 @@ DataSet* Sys::generate_collective(
     vector<bool> dimensions_involved,
     ComType collective_type,
     int explicit_priority,
-    CommunicatorGroup* communicator_group) {
+    CommunicatorGroup* communicator_group,
+    uint64_t collective_instance_id) {
+    const bool use_fixed_subgroup_direction = false;
+    const int synchronization_target =
+        communicator_group != nullptr
+            ? static_cast<int>(communicator_group->involved_NPUs.size())
+            : static_cast<int>(all_sys.size());
+    auto allocate_stream_id = [&](int stream_index) {
+        if (collective_instance_id != uint64_t(-1)) {
+            constexpr int kMaxCommGroups = 128;
+            constexpr int kMaxStreamsPerCollective = 64;
+            const int comm_group_id =
+                communicator_group != nullptr ? communicator_group->get_id() : 0;
+            assert(0 <= comm_group_id && comm_group_id < kMaxCommGroups);
+            assert(0 <= stream_index &&
+                   stream_index < kMaxStreamsPerCollective);
+            return static_cast<int>(
+                collective_instance_id * kMaxCommGroups *
+                    kMaxStreamsPerCollective +
+                comm_group_id * kMaxStreamsPerCollective + stream_index);
+        }
+
+        int stream_id = num_streams++;
+        if (communicator_group != nullptr) {
+            stream_id = communicator_group->num_streams++;
+        }
+        return stream_id;
+    };
     // TODO(jinsun): For custom collective, we do not need the chunk_size here (since the chunk size is already determined)
     // Therefore, we also do not need the 'preferred-dataset-splits' value from the system JSON input. 
     // However, this variable is intertwined deeply in this function so that we cannot remove it for now.
@@ -712,12 +796,10 @@ DataSet* Sys::generate_collective(
             communicator_group);
         list<CollectivePhase> vect;
         vect.push_back(phase);
-        int stream_id = num_streams++;
-        if (communicator_group != nullptr) {
-            stream_id = communicator_group->num_streams++;
-        }
+        int stream_id = allocate_stream_id(0);
         StreamBaseline* newStream =
-            new StreamBaseline(this, dataset, stream_id, vect, pri);
+            new StreamBaseline(this, dataset, stream_id, vect, pri,
+                               synchronization_target);
         newStream->current_queue_id = -1;
         insert_into_ready_list(newStream);
         return dataset;
@@ -778,12 +860,15 @@ DataSet* Sys::generate_collective(
                 }
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     collective_type,
                     topology->get_basic_topology_at_dimension(dim_mapper[dim],
                                                               collective_type),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
@@ -805,12 +890,15 @@ DataSet* Sys::generate_collective(
                 }
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level_first(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     ComType::Reduce_Scatter,
                     topology->get_basic_topology_at_dimension(
                         dim_mapper[dim], ComType::Reduce_Scatter),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
@@ -826,12 +914,15 @@ DataSet* Sys::generate_collective(
                 }
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level_last(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     ComType::All_Gather,
                     topology->get_basic_topology_at_dimension(
                         dim_mapper[dim], ComType::All_Gather),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
@@ -876,12 +967,15 @@ DataSet* Sys::generate_collective(
                 // dimension.
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level_first(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     ComType::Reduce_Scatter,
                     topology->get_basic_topology_at_dimension(
                         dim_mapper[dim], ComType::Reduce_Scatter),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
@@ -905,12 +999,15 @@ DataSet* Sys::generate_collective(
                 // deadlock. Refer to the PR #135 for more details.
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level_first(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     ComType::All_Reduce,
                     topology->get_basic_topology_at_dimension(
                         dim_mapper[dim], ComType::All_Reduce),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
@@ -929,24 +1026,25 @@ DataSet* Sys::generate_collective(
                 // dimension.
                 pair<int, RingTopology::Direction> queue =
                     vLevels->get_next_queue_at_level_last(dim_mapper[dim]);
+                RingTopology::Direction direction = queue.second;
+                if (use_fixed_subgroup_direction) {
+                    direction = RingTopology::Direction::Clockwise;
+                }
                 CollectivePhase phase = generate_collective_phase(
                     ComType::All_Gather,
                     topology->get_basic_topology_at_dimension(
                         dim_mapper[dim], ComType::All_Gather),
-                    remain_size, queue.first, queue.second,
-                    InjectionPolicy::Normal,
+                    remain_size, queue.first, direction, InjectionPolicy::Normal,
                     implementation_per_dimension[dim_mapper[dim]]);
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
             }
         }
         if (vect.size() > 0) {
-            int stream_id = num_streams++;
-            if (communicator_group != nullptr) {
-                stream_id = communicator_group->num_streams++;
-            }
+            int stream_id = allocate_stream_id(count - 1);
             StreamBaseline* newStream =
-                new StreamBaseline(this, dataset, stream_id, vect, pri);
+                new StreamBaseline(this, dataset, stream_id, vect, pri,
+                                   synchronization_target);
             newStream->current_queue_id = -1;
             insert_into_ready_list(newStream);
         } else {
@@ -1122,26 +1220,40 @@ void Sys::insert_stream(list<BaseStream*>* queue, BaseStream* baseStream) {
 }
 
 void Sys::ask_for_schedule(int max) {
-    if (ready_list.size() == 0 ||
-        ready_list.front()->synchronizer[ready_list.front()->stream_id] <
-            all_sys.size()) {
+    if (ready_list.size() == 0) {
         return;
     }
     int top = ready_list.front()->stream_id;
+    const auto sync_it = BaseStream::synchronizer.find(top);
+    const auto sync_target_it = BaseStream::synchronizer_target.find(top);
+    if (sync_it == BaseStream::synchronizer.end() ||
+        sync_target_it == BaseStream::synchronizer_target.end() ||
+        sync_it->second < sync_target_it->second) {
+        return;
+    }
+
+    std::vector<Sys*> participants;
+    participants.reserve(sync_target_it->second);
+    for (auto& sys : all_sys) {
+        if (sys->ready_list.size() != 0 &&
+            sys->ready_list.front()->stream_id == top) {
+            participants.push_back(sys);
+        }
+    }
+    if (static_cast<int>(participants.size()) != sync_target_it->second) {
+        return;
+    }
+
     uint64_t min = ready_list.size();
     if (min > max) {
         min = static_cast<uint64_t>(max);
     }
-    for (auto& sys : all_sys) {
-        if (sys->ready_list.size() == 0 ||
-            sys->ready_list.front()->stream_id != top) {
-            return;
-        }
+    for (auto& sys : participants) {
         if (sys->ready_list.size() < min) {
             min = sys->ready_list.size();
         }
     }
-    for (auto& sys : all_sys) {
+    for (auto& sys : participants) {
         sys->schedule(min);
     }
     return;
@@ -1187,6 +1299,7 @@ void Sys::proceed_to_next_vnet_baseline(StreamBaseline* stream) {
     }
     if (stream->my_current_phase.algorithm != nullptr) {
         delete stream->my_current_phase.algorithm;
+        stream->my_current_phase.algorithm = nullptr;
     }
     if (stream->phases_to_go.size() == 0) {
         stream->take_bus_stats_average();

@@ -5,7 +5,10 @@ LICENSE file in the root directory of this source tree.
 
 #include "congestion_aware/CongestionAwareNetworkApi.hh"
 #include <astra-network-analytical/congestion_aware/Chunk.h>
+#include <cstdlib>
 #include <cassert>
+#include <iostream>
+#include <sstream>
 
 using namespace AstraSim;
 using namespace AstraSimAnalyticalCongestionAware;
@@ -13,6 +16,26 @@ using namespace NetworkAnalytical;
 using namespace NetworkAnalyticalCongestionAware;
 
 std::shared_ptr<Topology> CongestionAwareNetworkApi::topology;
+
+namespace {
+
+bool should_debug_tag(const int tag) noexcept {
+    const char* const raw = std::getenv("ASTRA_ANALYTICAL_DEBUG_TAGS");
+    if (raw == nullptr || *raw == '\0') {
+        return false;
+    }
+
+    std::stringstream ss(raw);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (!token.empty() && std::stoi(token) == tag) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
 
 void CongestionAwareNetworkApi::set_topology(
     std::shared_ptr<Topology> topology_ptr) noexcept {
@@ -41,11 +64,22 @@ int CongestionAwareNetworkApi::sim_send(void* const buffer,
                                         sim_request* const request,
                                         void (*msg_handler)(void*),
                                         void* const fun_arg) {
-    // query chunk id
     const auto src = sim_comm_get_rank();
+    const auto matched_chunk_id =
+        callback_tracker.find_chunk_waiting_for_send(tag, src, dst, count);
     const auto chunk_id =
-        CongestionAwareNetworkApi::chunk_id_generator.create_send_chunk_id(
-            tag, src, dst, count);
+        matched_chunk_id.has_value()
+            ? matched_chunk_id.value()
+            : CongestionAwareNetworkApi::chunk_id_generator
+                  .create_send_chunk_id(tag, src, dst, count);
+
+    if (should_debug_tag(tag)) {
+        std::cerr << "[analytical-debug] send tag=" << tag << " src=" << src
+                  << " dst=" << dst << " size=" << count
+                  << " chunk_id=" << chunk_id
+                  << " matched_existing=" << matched_chunk_id.has_value()
+                  << std::endl;
+    }
 
     // search tracker
     const auto entry =

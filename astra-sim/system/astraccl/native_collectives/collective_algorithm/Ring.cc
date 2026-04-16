@@ -7,8 +7,32 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/system/PacketBundle.hh"
 #include "astra-sim/system/RecvPacketEventHandlerData.hh"
+#include <cstdlib>
+#include <iostream>
+#include <sstream>
 
 using namespace AstraSim;
+
+namespace {
+
+bool should_debug_stream(const int stream_id) {
+    const char* const raw = std::getenv("ASTRA_ANALYTICAL_DEBUG_TAGS");
+    if (raw == nullptr || *raw == '\0') {
+        return false;
+    }
+
+    const int tag = stream_id + Sys::FrontEndSendRecvType::COLLECTIVE;
+    std::stringstream ss(raw);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (!token.empty() && std::stoi(token) == tag) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
 
 Ring::Ring(ComType type,
            int id,
@@ -93,6 +117,13 @@ int Ring::get_non_zero_latency_packets() {
 }
 
 void Ring::run(EventType event, CallData* data) {
+    if (should_debug_stream(stream->stream_id)) {
+        std::cerr << "[ring-debug] rank=" << id << " stream=" << stream->stream_id
+                  << " event=" << static_cast<int>(event)
+                  << " stream_count=" << stream_count
+                  << " free_packets=" << free_packets
+                  << " packets=" << packets.size() << std::endl;
+    }
     if (event == EventType::General) {
         free_packets += 1;
         ready();
@@ -161,7 +192,8 @@ void Ring::reduce() {
 
 bool Ring::iteratable() {
     if (stream_count == 0 &&
-        free_packets == (parallel_reduce * 1)) {  // && not_delivered==0
+        free_packets == (parallel_reduce * 1) &&
+        total_packets_received == total_packets_sent) {
         exit();
         return false;
     }
@@ -221,6 +253,15 @@ bool Ring::ready() {
         return false;
     }
     MyPacket packet = packets.front();
+    if (should_debug_stream(stream->stream_id)) {
+        std::cerr << "[ring-debug] ready rank=" << id
+                  << " stream=" << stream->stream_id
+                  << " send_to=" << packet.preferred_dest
+                  << " recv_from=" << packet.preferred_src
+                  << " msg_size=" << msg_size
+                  << " stream_count=" << stream_count
+                  << " free_packets=" << free_packets << std::endl;
+    }
     sim_request snd_req;
     snd_req.srcRank = id;
     snd_req.dstRank = packet.preferred_dest;

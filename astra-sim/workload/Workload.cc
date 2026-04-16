@@ -45,8 +45,10 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     }
     this->et_feeder = new ETFeeder(workload_filename);
     this->comm_groups.clear();
-    // TODO: parametrize the number of available hardware resources
-    this->hw_resource = new HardwareResource(1, sys->id);
+    this->hw_resource = new HardwareResource(
+        sys->max_in_flight_cpu_ops, sys->max_in_flight_gpu_comp_ops,
+        sys->max_in_flight_gpu_comm_ops, sys->max_in_flight_gpu_recv_ops,
+        sys->id);
     this->local_mem_usage_tracker =
         std::make_unique<LocalMemUsageTracker>(sys->id);
     this->sys = sys;
@@ -56,6 +58,11 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
 }
 
 Workload::~Workload() {
+    for (auto& kv : collective_comm_wrapper_map) {
+        delete kv.second;
+    }
+    collective_comm_wrapper_map.clear();
+
     for (auto comm_group : comm_groups) {
         delete comm_group.second;
     }
@@ -125,7 +132,11 @@ void Workload::issue_pytorch_pg_metadata(
             // To ensure pgName > 0
             CommunicatorGroup* cg =
                 new CommunicatorGroup(pgNameInt + 1, involved_NPUs, sys);
-            this->comm_groups[pgNameInt] = cg;
+            if (this->comm_groups.find(pgNameInt) == this->comm_groups.end()) {
+                this->comm_groups[pgNameInt] = cg;
+            } else {
+                delete cg;
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "Error parsing or processing JSON: " << e.what()
@@ -340,31 +351,40 @@ void Workload::issue_coll_comm(
     const auto comm_size = node->comm_size<uint64_t>();
     // Record communication size for bandwidth calculation
     stats->get_operator_statistics(node->id()).comm_size = comm_size;
-    // TODO: comm_tag? which is used to distinguish two different collective in
-    // same pg
     const auto comm_priority = node->comm_priority<uint32_t>();  // default 0u
+    const int comm_group_id = comm_group != nullptr ? comm_group->get_id() : 0;
+    const auto collective_instance_id =
+        collective_instance_sequence_by_group[comm_group_id]++;
 
     if (comm_type == ChakraCollectiveCommType::ALL_REDUCE) {
         DataSet* fp = sys->generate_all_reduce(comm_size, involved_dims,
-                                               comm_group, comm_priority, node->id());
+                                               comm_group, comm_priority,
+                                               node->id(),
+                                               collective_instance_id);
         collective_comm_node_id_map[fp->my_id] = node->id();
         collective_comm_wrapper_map[fp->my_id] = fp;
         fp->set_notifier(this, EventType::CollectiveCommunicationFinished);
     } else if (comm_type == ChakraCollectiveCommType::ALL_TO_ALL) {
         DataSet* fp = sys->generate_all_to_all(comm_size, involved_dims,
-                                               comm_group, comm_priority, node->id());
+                                               comm_group, comm_priority,
+                                               node->id(),
+                                               collective_instance_id);
         collective_comm_node_id_map[fp->my_id] = node->id();
         collective_comm_wrapper_map[fp->my_id] = fp;
         fp->set_notifier(this, EventType::CollectiveCommunicationFinished);
     } else if (comm_type == ChakraCollectiveCommType::ALL_GATHER) {
         DataSet* fp = sys->generate_all_gather(comm_size, involved_dims,
-                                               comm_group, comm_priority, node->id());
+                                               comm_group, comm_priority,
+                                               node->id(),
+                                               collective_instance_id);
         collective_comm_node_id_map[fp->my_id] = node->id();
         collective_comm_wrapper_map[fp->my_id] = fp;
         fp->set_notifier(this, EventType::CollectiveCommunicationFinished);
     } else if (comm_type == ChakraCollectiveCommType::REDUCE_SCATTER) {
         DataSet* fp = sys->generate_reduce_scatter(comm_size, involved_dims,
-                                                   comm_group, comm_priority, node->id());
+                                                   comm_group, comm_priority,
+                                                   node->id(),
+                                                   collective_instance_id);
         collective_comm_node_id_map[fp->my_id] = node->id();
         collective_comm_wrapper_map[fp->my_id] = fp;
         fp->set_notifier(this, EventType::CollectiveCommunicationFinished);
@@ -554,7 +574,8 @@ void Workload::call(EventType event, CallData* data) {
         (dep_resolver.get_ongoing_nodes().empty()) &&
         (hw_resource->num_in_flight_cpu_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
-        (hw_resource->num_in_flight_gpu_comm_ops == 0)) {
+        (hw_resource->num_in_flight_gpu_comm_ops == 0) &&
+        (hw_resource->num_in_flight_gpu_recv_ops == 0)) {
         report();
         sys->comm_NI->sim_notify_finished();
         is_finished = true;

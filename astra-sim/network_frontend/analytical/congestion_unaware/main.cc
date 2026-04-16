@@ -99,6 +99,8 @@ int main(int argc, char* argv[]) {
         event_queue->proceed();
     }
 
+    CommonNetworkApi::cleanup_pending_callbacks();
+
     for (auto it : systems) {
         delete it;
     }

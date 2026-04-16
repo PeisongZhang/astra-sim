@@ -37,6 +37,12 @@ class CollectiveImpl {
         this->type = type;
     };
 
+    virtual ~CollectiveImpl() = default;
+
+    virtual CollectiveImpl* clone() const {
+        return new CollectiveImpl(type);
+    }
+
     CollectiveImplType type;
 };
 
@@ -53,6 +59,10 @@ class DirectCollectiveImpl : public CollectiveImpl {
         this->direct_collective_window = direct_collective_window;
     }
 
+    CollectiveImpl* clone() const override {
+        return new DirectCollectiveImpl(type, direct_collective_window);
+    }
+
     int direct_collective_window;
 };
 
@@ -66,6 +76,10 @@ class CustomCollectiveImpl : public CollectiveImpl {
     CustomCollectiveImpl(CollectiveImplType type, std::string filename)
         : CollectiveImpl(type) {
         this->filename = filename;
+    }
+
+    CollectiveImpl* clone() const override {
+        return new CustomCollectiveImpl(type, filename);
     }
 
     /* The filename of the corresponding Chakra ET file */

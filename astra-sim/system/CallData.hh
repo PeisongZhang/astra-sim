@@ -10,7 +10,7 @@ namespace AstraSim {
 
 class CallData {
   public:
-    ~CallData() = default;
+    virtual ~CallData() = default;
 };
 
 }  // namespace AstraSim

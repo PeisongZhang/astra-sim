@@ -18,12 +18,12 @@ CommunicatorGroup::CommunicatorGroup(int comm_group_id,
     set_id(comm_group_id);
     this->involved_NPUs = involved_NPUs;
     this->generator = generator;
-    std::sort(involved_NPUs.begin(), involved_NPUs.end());
+    std::sort(this->involved_NPUs.begin(), this->involved_NPUs.end());
 
     // -1 means the rank is not in the comm group.
     int position = -1;
-    for (int i = 0; i < involved_NPUs.size(); ++i) {
-        if (involved_NPUs[i] == generator->id) {
+    for (int i = 0; i < this->involved_NPUs.size(); ++i) {
+        if (this->involved_NPUs[i] == generator->id) {
             position = i;
             break;
         }
@@ -74,6 +74,10 @@ CollectivePlan* CommunicatorGroup::get_collective_plan(ComType comm_type, uint64
             // was a good choice.
             collective_implementation = std::vector<CollectiveImpl*>{
                 new CollectiveImpl(CollectiveImplType::Ring)};
+        } else {
+            for (auto& ci : collective_implementation) {
+                ci = ci->clone();
+            }
         }
         LogicalTopology* logical_topology = new RingTopology(
             RingTopology::Dimension::Local, generator->id, involved_NPUs);
@@ -86,6 +90,10 @@ CollectivePlan* CommunicatorGroup::get_collective_plan(ComType comm_type, uint64
     }
     assert(false);
     return nullptr;
+}
+
+int CommunicatorGroup::get_id() const {
+    return id;
 }
 
 int CommunicatorGroup::get_position_in_group() {

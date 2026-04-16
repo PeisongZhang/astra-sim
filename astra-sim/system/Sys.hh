@@ -127,22 +127,26 @@ class Sys : public Callable {
                                  std::vector<bool> involved_dimensions,
                                  CommunicatorGroup* communicator_group,
                                  int explicit_priority,
-                                 uint64_t workload_node_id = -1);
+                                 uint64_t workload_node_id = -1,
+                                 uint64_t collective_instance_id = -1);
     DataSet* generate_all_to_all(uint64_t size,
                                  std::vector<bool> involved_dimensions,
                                  CommunicatorGroup* communicator_group,
                                  int explicit_priority,
-                                 uint64_t workload_node_id = -1);
+                                 uint64_t workload_node_id = -1,
+                                 uint64_t collective_instance_id = -1);
     DataSet* generate_all_gather(uint64_t size,
                                  std::vector<bool> involved_dimensions,
                                  CommunicatorGroup* communicator_group,
                                  int explicit_priority,
-                                 uint64_t workload_node_id = -1);
+                                 uint64_t workload_node_id = -1,
+                                 uint64_t collective_instance_id = -1);
     DataSet* generate_reduce_scatter(uint64_t size,
                                      std::vector<bool> involved_dimensions,
                                      CommunicatorGroup* communicator_group,
                                      int explicit_priority,
-                                     uint64_t workload_node_id = -1);
+                                     uint64_t workload_node_id = -1,
+                                     uint64_t collective_instance_id = -1);
     DataSet* generate_collective(
         uint64_t size,
         LogicalTopology* topology,
@@ -150,7 +154,8 @@ class Sys : public Callable {
         std::vector<bool> dimensions_involved,
         ComType collective_type,
         int explicit_priority,
-        CommunicatorGroup* communicator_group);
+        CommunicatorGroup* communicator_group,
+        uint64_t collective_instance_id = -1);
     CollectivePhase generate_collective_phase(ComType collective_type,
                                               BasicLogicalTopology* topology,
                                               uint64_t data_size,
@@ -257,6 +262,10 @@ class Sys : public Callable {
 
     // workload
     Workload* workload;
+    uint32_t max_in_flight_cpu_ops;
+    uint32_t max_in_flight_gpu_comp_ops;
+    uint32_t max_in_flight_gpu_comm_ops;
+    uint32_t max_in_flight_gpu_recv_ops;
 
     // roofline model
     bool roofline_enabled;

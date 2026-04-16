@@ -4,7 +4,15 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "common/CommonNetworkApi.hh"
+#include "astra-sim/system/MemEventHandlerData.hh"
+#include "astra-sim/system/RecvPacketEventHandlerData.hh"
+#include "astra-sim/system/RendezvousRecvData.hh"
+#include "astra-sim/system/RendezvousSendData.hh"
+#include "astra-sim/system/SendPacketEventHandlerData.hh"
+#include "astra-sim/workload/Workload.hh"
+#include <cstdlib>
 #include <cassert>
+#include <sstream>
 
 using namespace AstraSim;
 using namespace AstraSimAnalytical;
@@ -31,6 +39,103 @@ CallbackTracker& CommonNetworkApi::get_callback_tracker() noexcept {
     return callback_tracker;
 }
 
+namespace {
+
+bool should_debug_tag(const int tag) noexcept {
+    const char* const raw = std::getenv("ASTRA_ANALYTICAL_DEBUG_TAGS");
+    if (raw == nullptr || *raw == '\0') {
+        return false;
+    }
+
+    std::stringstream ss(raw);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (!token.empty() && std::stoi(token) == tag) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void release_pending_workload_node(Workload* workload,
+                                   WorkloadLayerHandlerData* wlhd) noexcept {
+    if (workload == nullptr || wlhd == nullptr) {
+        return;
+    }
+
+    auto node = workload->et_feeder->lookupNode(wlhd->node_id);
+    if (!node) {
+        return;
+    }
+
+    if (workload->hw_resource == nullptr) {
+        return;
+    }
+
+    const auto node_id = node->id();
+    if (workload->hw_resource->cpu_ops_node.count(node_id) != 0 ||
+        workload->hw_resource->gpu_ops_node.count(node_id) != 0 ||
+        workload->hw_resource->gpu_comms_node.count(node_id) != 0 ||
+        workload->hw_resource->gpu_recvs_node.count(node_id) != 0) {
+        workload->hw_resource->release(node);
+    }
+}
+
+void cleanup_callback_arg(void* arg) noexcept {
+    if (arg == nullptr) {
+        return;
+    }
+
+    auto* const ehd = static_cast<BasicEventHandlerData*>(arg);
+    switch (ehd->event) {
+    case EventType::PacketReceived: {
+        auto* const data = static_cast<RecvPacketEventHandlerData*>(arg);
+        release_pending_workload_node(data->workload, data->wlhd);
+        delete data;
+        break;
+    }
+    case EventType::PacketSent: {
+        auto* const data = static_cast<SendPacketEventHandlerData*>(arg);
+        release_pending_workload_node(
+            dynamic_cast<Workload*>(data->callable), data->wlhd);
+        delete data;
+        break;
+    }
+    case EventType::RendezvousSend: {
+        auto* const data = static_cast<RendezvousSendData*>(arg);
+        cleanup_callback_arg(data->send.fun_arg);
+        data->send.fun_arg = nullptr;
+        delete data;
+        break;
+    }
+    case EventType::RendezvousRecv: {
+        auto* const data = static_cast<RendezvousRecvData*>(arg);
+        cleanup_callback_arg(data->recv.fun_arg);
+        data->recv.fun_arg = nullptr;
+        delete data;
+        break;
+    }
+    case EventType::CompFinished:
+    case EventType::MemLoadFinished:
+    case EventType::MemStoreFinished:
+        delete static_cast<MemEventHandlerData*>(arg);
+        break;
+    default:
+        delete ehd;
+        break;
+    }
+}
+
+}  // namespace
+
+void CommonNetworkApi::cleanup_pending_callbacks() noexcept {
+    callback_tracker.cleanup_pending_entries(cleanup_callback_arg);
+}
+
+std::vector<std::string> CommonNetworkApi::describe_pending_callbacks() noexcept {
+    return callback_tracker.describe_pending_entries();
+}
+
 void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
     assert(args != nullptr);
 
@@ -39,6 +144,13 @@ void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
         static_cast<std::tuple<int, int, int, uint64_t, int>*>(args);
     const auto [tag, src, dest, count, chunk_id] = *data;
     delete data;
+
+    if (should_debug_tag(tag)) {
+        std::cerr << "[analytical-debug] arrival tag=" << tag
+                  << " src=" << src << " dst=" << dest
+                  << " size=" << count << " chunk_id=" << chunk_id
+                  << std::endl;
+    }
 
     // search tracker
     auto& tracker = CommonNetworkApi::get_callback_tracker();
@@ -101,11 +213,22 @@ int CommonNetworkApi::sim_recv(void* const buffer,
                                sim_request* const request,
                                void (*msg_handler)(void*),
                                void* const fun_arg) {
-    // query chunk id
     const auto dst = sim_comm_get_rank();
+    const auto matched_chunk_id =
+        callback_tracker.find_chunk_waiting_for_recv(tag, src, dst, count);
     const auto chunk_id =
-        CommonNetworkApi::chunk_id_generator.create_recv_chunk_id(tag, src, dst,
-                                                                  count);
+        matched_chunk_id.has_value()
+            ? matched_chunk_id.value()
+            : CommonNetworkApi::chunk_id_generator.create_recv_chunk_id(
+                  tag, src, dst, count);
+
+    if (should_debug_tag(tag)) {
+        std::cerr << "[analytical-debug] recv tag=" << tag << " src=" << src
+                  << " dst=" << dst << " size=" << count
+                  << " chunk_id=" << chunk_id
+                  << " matched_existing=" << matched_chunk_id.has_value()
+                  << std::endl;
+    }
 
     // search tracker
     auto entry = callback_tracker.search_entry(tag, src, dst, count, chunk_id);

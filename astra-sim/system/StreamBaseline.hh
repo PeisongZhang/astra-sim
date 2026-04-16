@@ -21,7 +21,8 @@ class StreamBaseline : public BaseStream {
                    DataSet* dataset,
                    int stream_id,
                    std::list<CollectivePhase> phases_to_go,
-                   int priority);
+                   int priority,
+                   int synchronization_target);
 
     void init();
     void call(EventType event, CallData* data);

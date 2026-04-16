@@ -41,11 +41,14 @@ int CongestionUnawareNetworkApi::sim_send(void* const buffer,
                                           sim_request* const request,
                                           void (*msg_handler)(void*),
                                           void* const fun_arg) {
-    // query chunk id
     const auto src = sim_comm_get_rank();
+    const auto matched_chunk_id =
+        callback_tracker.find_chunk_waiting_for_send(tag, src, dst, count);
     const auto chunk_id =
-        CongestionUnawareNetworkApi::chunk_id_generator.create_send_chunk_id(
-            tag, src, dst, count);
+        matched_chunk_id.has_value()
+            ? matched_chunk_id.value()
+            : CongestionUnawareNetworkApi::chunk_id_generator
+                  .create_send_chunk_id(tag, src, dst, count);
 
     // search tracker
     const auto entry =

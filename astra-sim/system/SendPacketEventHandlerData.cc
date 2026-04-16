@@ -19,3 +19,7 @@ SendPacketEventHandlerData::SendPacketEventHandlerData(Callable* callable,
     this->callable = callable;
     this->tag = tag;
 }
+
+SendPacketEventHandlerData::~SendPacketEventHandlerData() {
+    delete wlhd;
+}

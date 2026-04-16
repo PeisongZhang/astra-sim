@@ -34,6 +34,7 @@ enum class BypassRule {
 class CollectiveImplLookup {
     public:
         CollectiveImplLookup(int rank_);
+        ~CollectiveImplLookup();
 
         void setup_collective_impl_from_config(json j);
 

@@ -17,6 +17,20 @@ namespace AstraSim {
 
     CollectiveImplLookup::CollectiveImplLookup(int rank_) : rank(rank_) {}
 
+    CollectiveImplLookup::~CollectiveImplLookup() {
+        for (auto& [_, ci] : per_node_custom_impl) {
+            delete ci;
+        }
+        for (auto& [_, ci] : global_custom_impl_per_coll) {
+            delete ci;
+        }
+        for (auto& [_, vec] : native_impl_per_coll_dim) {
+            for (auto* ci : vec) {
+                delete ci;
+            }
+        }
+    }
+
     CollectiveImpl* generate_collective_impl_from_input(
         string collective_impl_str) {
         if (collective_impl_str == "ring") {

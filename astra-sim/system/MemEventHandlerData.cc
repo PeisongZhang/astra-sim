@@ -4,10 +4,15 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/system/MemEventHandlerData.hh"
+#include "astra-sim/system/WorkloadLayerHandlerData.hh"
 
 using namespace AstraSim;
 
 MemEventHandlerData::MemEventHandlerData() {
     this->workload = nullptr;
     this->wlhd = nullptr;
+}
+
+MemEventHandlerData::~MemEventHandlerData() {
+    delete wlhd;
 }

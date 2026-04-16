@@ -16,6 +16,7 @@ class WorkloadLayerHandlerData;
 class MemEventHandlerData : public BasicEventHandlerData {
   public:
     MemEventHandlerData();
+    ~MemEventHandlerData() override;
     Workload* workload;
     WorkloadLayerHandlerData* wlhd;
 };
