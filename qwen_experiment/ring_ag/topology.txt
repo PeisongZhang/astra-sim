@@ -1,6 +1,6 @@
 16 0 16
 
-0 1 100Gbps 0.5us 0
+0 1 400Gbps 0.5us 0
 1 2 400Gbps 0.5us 0
 2 3 400Gbps 0.5us 0
 3 4 400Gbps 0.5us 0
