@@ -19,6 +19,7 @@ SYSTEM="${SCRIPT_DIR:?}/astra_system.json"
 REMOTE_MEMORY="${SCRIPT_DIR:?}/no_memory_expansion.json"
 NETWORK="${SCRIPT_DIR:?}/analytical_network.yml"
 LOG_FILE="${SCRIPT_DIR:?}/run_analytical.log"
+NUM_QUEUES_PER_DIM="${ANALYTICAL_NUM_QUEUES_PER_DIM:-1}"
 
 # --- Run ---
 echo "[ASTRA-sim] Running with analytical congestion-aware backend (custom topology)..."
@@ -28,6 +29,7 @@ echo "[ASTRA-sim] Running with analytical congestion-aware backend (custom topol
     --system-configuration="${SYSTEM}" \
     --remote-memory-configuration="${REMOTE_MEMORY}" \
     --network-configuration="${NETWORK}" \
+    --num-queues-per-dim="${NUM_QUEUES_PER_DIM}" \
     2>&1 | tee "${LOG_FILE}"
 SIM_EXIT=${PIPESTATUS[0]}
 
@@ -37,3 +39,4 @@ fi
 
 echo "[ASTRA-sim] Log saved to ${LOG_FILE}."
 echo "[ASTRA-sim] Finished."
+exit ${SIM_EXIT}

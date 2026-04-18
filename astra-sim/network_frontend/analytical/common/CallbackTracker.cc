@@ -93,12 +93,14 @@ std::optional<int> CallbackTracker::find_chunk_waiting_for_send(
     assert(dest >= 0);
     assert(chunk_size > 0);
 
-    for (auto& [key, entry] : tracker) {
+    const auto begin_key = std::make_tuple(tag, src, dest, chunk_size, 0);
+    for (auto it = tracker.lower_bound(begin_key); it != tracker.end(); ++it) {
+        auto& [key, entry] = *it;
         const auto& [entry_tag, entry_src, entry_dest, entry_chunk_size,
                      entry_chunk_id] = key;
         if (entry_tag != tag || entry_src != src || entry_dest != dest ||
             entry_chunk_size != chunk_size) {
-            continue;
+            break;
         }
 
         if (entry.has_recv_handler() && !entry.has_send_handler() &&
@@ -120,12 +122,14 @@ std::optional<int> CallbackTracker::find_chunk_waiting_for_recv(
     assert(dest >= 0);
     assert(chunk_size > 0);
 
-    for (auto& [key, entry] : tracker) {
+    const auto begin_key = std::make_tuple(tag, src, dest, chunk_size, 0);
+    for (auto it = tracker.lower_bound(begin_key); it != tracker.end(); ++it) {
+        auto& [key, entry] = *it;
         const auto& [entry_tag, entry_src, entry_dest, entry_chunk_size,
                      entry_chunk_id] = key;
         if (entry_tag != tag || entry_src != src || entry_dest != dest ||
             entry_chunk_size != chunk_size) {
-            continue;
+            break;
         }
 
         if (!entry.has_recv_handler() &&

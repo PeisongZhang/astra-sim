@@ -12,7 +12,9 @@ std::shared_ptr<spdlog::logger> LoggerFactory::get_logger(
     if (logger == nullptr) {
         logger = spdlog::create_async<spdlog::sinks::null_sink_mt>(logger_name);
         logger->set_level(spdlog::level::trace);
-        logger->flush_on(spdlog::level::info);
+        // Flushing every info log is expensive for large simulations and
+        // shutdown already flushes outstanding async messages.
+        logger->flush_on(spdlog::level::err);
     }
     if constexpr (!ENABLE_DEFAULT_SINK_FOR_OTHER_LOGGERS) {
         return logger;

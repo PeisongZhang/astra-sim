@@ -144,7 +144,7 @@ void Workload::issue_pytorch_pg_metadata(
     }
 }
 
-void Workload::issue_dep_free_nodes() {
+bool Workload::issue_dep_free_nodes() {
     auto& dependancy_resolver = this->et_feeder->getDependancyResolver();
     auto dependancy_free_nodes =
         dependancy_resolver.get_dependancy_free_nodes();
@@ -152,12 +152,15 @@ void Workload::issue_dep_free_nodes() {
     for (const auto node_id : dependancy_free_nodes) {
         dependancy_free_nodes_set.insert(node_id);
     }
+    bool issued_any = false;
     for (const auto node_id : dependancy_free_nodes_set) {
         std::shared_ptr<ETFeederNode> node = et_feeder->lookupNode(node_id);
         if (hw_resource->is_available(node)) {
             issue(node);
+            issued_any = true;
         }
     }
+    return issued_any;
 }
 
 void Workload::issue(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {

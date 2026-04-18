@@ -9,7 +9,7 @@ NS3_DIR="${ASTRA_SIM_DIR:?}"/extern/network_backend/ns-3
 
 WORKLOAD="${EXAMPLES_DIR:?}"/workload/microbenchmarks/all_gather/16npus_1MB/all_gather
 SYSTEM="${EXAMPLES_DIR:?}"/system/native_collectives/Ring_4chunks.json
-NETWORK="${NS3_DIR:?}"/scratch/config/config_clos.txt
+NETWORK="${NS3_DIR:?}"/scratch/config/config_ring.txt
 LOGICAL_TOPOLOGY="${EXAMPLES_DIR:?}"/network/ns3/sample_16nodes_1D.json
 
 MEMORY="${EXAMPLES_DIR:?}"/remote_memory/analytical/no_memory_expansion.json
