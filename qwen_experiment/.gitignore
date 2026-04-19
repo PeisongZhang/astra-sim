@@ -4,8 +4,8 @@ pfc.txt
 qlen.txt
 trace.txt
 fct.txt
-no_memory_expansion.json
-logical_topo.json
+# no_memory_expansion.json
+# logical_topo.json
 *.npy
 workload/
 workload

@@ -736,13 +736,32 @@ DataSet* Sys::generate_collective(
             : static_cast<int>(all_sys.size());
     auto allocate_stream_id = [&](int stream_index) {
         if (collective_instance_id != uint64_t(-1)) {
-            constexpr int kMaxCommGroups = 128;
+            // stream_id encodes (collective_instance_id, comm_group_id,
+            // stream_index) into a single int. The encoding must be
+            // collision-free across every live (instance, group, index)
+            // triple, otherwise different collectives alias the same
+            // stream_id and the synchronizer_target check in
+            // ask_for_schedule() deadlocks (participants.size() != target).
+            // kMaxCommGroups must be strictly greater than the largest
+            // comm_group_id seen in workload.json; otherwise high-numbered
+            // groups wrap around and collide with low-numbered ones for
+            // instance_id differing by a multiple of kMaxCommGroups/64.
+            constexpr int kMaxCommGroups = 1024;
             constexpr int kMaxStreamsPerCollective = 64;
             const int comm_group_id =
                 communicator_group != nullptr ? communicator_group->get_id() : 0;
-            assert(0 <= comm_group_id && comm_group_id < kMaxCommGroups);
-            assert(0 <= stream_index &&
-                   stream_index < kMaxStreamsPerCollective);
+            if (comm_group_id < 0 || comm_group_id >= kMaxCommGroups) {
+                sys_panic("comm_group_id=" + std::to_string(comm_group_id) +
+                          " exceeds kMaxCommGroups=" +
+                          std::to_string(kMaxCommGroups) +
+                          "; raise kMaxCommGroups in Sys.cc");
+            }
+            if (stream_index < 0 ||
+                stream_index >= kMaxStreamsPerCollective) {
+                sys_panic("stream_index=" + std::to_string(stream_index) +
+                          " exceeds kMaxStreamsPerCollective=" +
+                          std::to_string(kMaxStreamsPerCollective));
+            }
             return static_cast<int>(
                 collective_instance_id * kMaxCommGroups *
                     kMaxStreamsPerCollective +
