@@ -20,6 +20,16 @@ void Roofline::set_bandwidth(double bandwidth) {
     this->bandwidth = bandwidth;
 }
 
+void Roofline::set_achievable_fraction(double frac) {
+    if (frac <= 0.0) {
+        this->achievable_fraction = 1.0;
+    } else {
+        this->achievable_fraction = frac;
+    }
+}
+
 double Roofline::get_perf(double operational_intensity) {
-    return min(bandwidth * operational_intensity, peak_perf);
+    const double bw = bandwidth * achievable_fraction;
+    const double peak = peak_perf * achievable_fraction;
+    return min(bw * operational_intensity, peak);
 }

@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         help='Leaf <-> Spine latency, e.g. "0.0006ms".',
     )
     parser.add_argument(
+        "--nics-per-gpu",
+        type=positive_int,
+        default=1,
+        help="Parallel IB links from each GPU to its NIC switch and from the "
+             "NIC switch onwards. Models DGX A100's 8x HCA aggregate bandwidth "
+             "(set to 8 to roughly match Megatron-LM scatter/gather peak).",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("topology.txt"),
@@ -126,6 +134,7 @@ def generate_topology(
     gpu_nicswitch: LinkSpec,
     nicswitch_leaf: LinkSpec,
     leaf_spine: LinkSpec,
+    nics_per_gpu: int = 1,
 ) -> str:
     total_gpus = gpus_per_nvlink_node * nvlink_node_count
     leaf_count = math.ceil(nvlink_node_count / nvlink_nodes_per_leaf)
@@ -173,12 +182,15 @@ def generate_topology(
                 f"{format_error_rate(gpu_nvswitch.error_rate)}"
             )
 
+    # nics_per_gpu parallel links for GPU <-> NIC switch (P3-B). CustomTopology
+    # natively supports multi-edges so we simply emit the line multiple times.
     for gpu_id, nic_switch_id in enumerate(nic_switch_ids):
-        links.append(
-            f"{gpu_id} {nic_switch_id} "
-            f"{gpu_nicswitch.bandwidth} {gpu_nicswitch.latency} "
-            f"{format_error_rate(gpu_nicswitch.error_rate)}"
-        )
+        for _ in range(nics_per_gpu):
+            links.append(
+                f"{gpu_id} {nic_switch_id} "
+                f"{gpu_nicswitch.bandwidth} {gpu_nicswitch.latency} "
+                f"{format_error_rate(gpu_nicswitch.error_rate)}"
+            )
 
     for leaf_idx, node_group in enumerate(nvlink_node_groups):
         leaf_id = leaf_ids[leaf_idx]
@@ -187,11 +199,12 @@ def generate_topology(
             gpu_end = gpu_start + gpus_per_nvlink_node
             for gpu_id in range(gpu_start, gpu_end):
                 nic_switch_id = nic_switch_ids[gpu_id]
-                links.append(
-                    f"{nic_switch_id} {leaf_id} "
-                    f"{nicswitch_leaf.bandwidth} {nicswitch_leaf.latency} "
-                    f"{format_error_rate(nicswitch_leaf.error_rate)}"
-                )
+                for _ in range(nics_per_gpu):
+                    links.append(
+                        f"{nic_switch_id} {leaf_id} "
+                        f"{nicswitch_leaf.bandwidth} {nicswitch_leaf.latency} "
+                        f"{format_error_rate(nicswitch_leaf.error_rate)}"
+                    )
 
     for leaf_id in leaf_ids:
         for spine_id in spine_ids:
@@ -222,6 +235,7 @@ def main() -> None:
             args.nicswitch_leaf_latency,
         ),
         leaf_spine=LinkSpec(args.leaf_spine_bandwidth, args.leaf_spine_latency),
+        nics_per_gpu=args.nics_per_gpu,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(topology, encoding="utf-8")

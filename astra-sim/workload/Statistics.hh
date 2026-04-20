@@ -104,9 +104,20 @@ class Statistics {
     double average_compute_utilization_;
     double average_memory_utilization_;
     double average_operation_intensity_;
+    // P2-A: time when the rank is idle (no compute, no comm, no cpu, no
+    // remote-mem) — a proxy for the pipeline bubble on this rank.
+    Tick bubble_time = 0;
+    double bubble_fraction_ = 0.0;
+    // P2-A: aggregated communication stats for effective bandwidth report.
+    uint64_t total_comm_bytes_ = 0;
+    uint64_t total_p2p_bytes_ = 0;
+    uint64_t total_coll_bytes_ = 0;
     Workload* workload;
     std::unordered_map<NodeId, OperatorStatistics> operator_statistics;
     std::multimap<Tick, NodeId> start_times;
+
+    void extract_bubble();
+    void extract_comm_bytes();
 };
 
 }  // namespace AstraSim

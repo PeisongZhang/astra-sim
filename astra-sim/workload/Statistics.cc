@@ -170,6 +170,23 @@ void Statistics::report(std::shared_ptr<spdlog::logger> logger) const {
         logger->info("sys[{}], Total compute-communication overlap: {}", sys_id,
                      this->comp_comm_overlap);
     }
+    // P2-A: bubble + effective bandwidth reporting.
+    logger->info("sys[{}], Bubble time: {} ({:.3f}%)", sys_id, this->bubble_time,
+                 this->bubble_fraction_ * 100.0);
+    if (this->wall_time > 0) {
+        // 1 byte/ns = 1 GB/s
+        const double gbps_all = static_cast<double>(this->total_comm_bytes_) /
+                                static_cast<double>(this->wall_time);
+        const double gbps_p2p = static_cast<double>(this->total_p2p_bytes_) /
+                                static_cast<double>(this->wall_time);
+        const double gbps_coll = static_cast<double>(this->total_coll_bytes_) /
+                                 static_cast<double>(this->wall_time);
+        logger->info(
+            "sys[{}], Comm bytes: {} (p2p={} coll={}), Effective BW: "
+            "{:.3f} GB/s (p2p={:.3f}, coll={:.3f})",
+            sys_id, this->total_comm_bytes_, this->total_p2p_bytes_,
+            this->total_coll_bytes_, gbps_all, gbps_p2p, gbps_coll);
+    }
 
     // Report network bandwidth for communication operations
     // logger->info("sys[{}], Network bandwidth details:", sys_id);
@@ -265,6 +282,45 @@ void Statistics::extract_utilizations() {
         total_operation_intensity / total_compute_time;
 }
 
+void Statistics::extract_bubble() {
+    // Collect ALL operator intervals (regardless of type) and compute the
+    // union busy time; the rank is idle for (wall_time - busy_time).
+    std::vector<std::pair<Tick, Tick>> intervals;
+    intervals.reserve(operator_statistics.size());
+    for (const auto& [node_id, stat] : operator_statistics) {
+        intervals.emplace_back(stat.start_time, stat.end_time);
+    }
+    const Tick busy = _calculateTotalRuntimeFromIntervals(intervals);
+    this->bubble_time = (this->wall_time > busy) ? (this->wall_time - busy) : 0;
+    this->bubble_fraction_ = (this->wall_time > 0)
+        ? static_cast<double>(this->bubble_time) /
+          static_cast<double>(this->wall_time)
+        : 0.0;
+}
+
+void Statistics::extract_comm_bytes() {
+    this->total_comm_bytes_ = 0;
+    this->total_p2p_bytes_ = 0;
+    this->total_coll_bytes_ = 0;
+    // Walk feeder's per-op record to classify comm sub-type via node_id ->
+    // stat lookup. node_type is not stored in OperatorStatistics, so we use
+    // a heuristic: bandwidth field is only set on SEND/RECV; coll ops lack
+    // it. This is coarse but matches the current Statistics plumbing.
+    for (const auto& [node_id, stat] : operator_statistics) {
+        if (stat.type != OperatorStatistics::OperatorType::COMM)
+            continue;
+        if (!stat.comm_size.has_value())
+            continue;
+        uint64_t b = stat.comm_size.value();
+        this->total_comm_bytes_ += b;
+        if (stat.network_bandwidth.has_value()) {
+            this->total_p2p_bytes_ += b;
+        } else {
+            this->total_coll_bytes_ += b;
+        }
+    }
+}
+
 void Statistics::post_processing() {
     const auto& logger = LoggerFactory::get_logger("statistics");
     logger->info("sys[{}]. Post statistics processing start.",
@@ -285,6 +341,8 @@ void Statistics::post_processing() {
         extract_utilizations();
     }
     extract_comp_comm_overlap();
+    extract_bubble();
+    extract_comm_bytes();
 
     logger->info("sys[{}]. Post statistics processing end.",
                  this->workload->sys->id);

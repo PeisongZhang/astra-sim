@@ -276,6 +276,8 @@ class Sys : public Callable {
     bool track_local_mem;
     std::string local_mem_trace_filename;
     double local_mem_bw;
+    // P3-A: hard VRAM budget in bytes; 0 means unlimited (legacy).
+    uint64_t vram_capacity_bytes = 0;
     AstraRemoteMemoryAPI* remote_mem;
 
     // memory bus

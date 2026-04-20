@@ -32,3 +32,6 @@ runs
 
 .venv/
 .serena/
+
+local_mem_trace*.json
+*.log.*

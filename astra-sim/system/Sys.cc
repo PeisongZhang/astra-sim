@@ -413,6 +413,12 @@ bool Sys::initialize_sys(string name) {
         if (j["roofline-enabled"] != 0) {
             roofline_enabled = true;
             roofline = new Roofline(local_mem_bw, peak_perf);
+            // P2-B: optional derate for kernel-fusion / launch-overhead losses
+            // (models the ~11-19% gap between peak and achieved in §5.8).
+            if (j.contains("peak-perf-achievable-fraction")) {
+                double frac = j["peak-perf-achievable-fraction"];
+                roofline->set_achievable_fraction(frac);
+            }
         }
     }
     this->trace_enabled = false;
@@ -437,6 +443,16 @@ bool Sys::initialize_sys(string name) {
         this->track_local_mem = true;
         } else {
         this->track_local_mem = false;
+        }
+    }
+    // P3-A: optional VRAM cap (in GB). If peak usage exceeds this budget,
+    // Workload::fire() will emit a warning alongside the peak report.
+    this->vram_capacity_bytes = 0;
+    if (j.contains("vram-capacity-gb")) {
+        double gb = j["vram-capacity-gb"];
+        if (gb > 0.0) {
+            this->vram_capacity_bytes =
+                static_cast<uint64_t>(gb * 1024.0 * 1024.0 * 1024.0);
         }
     }
 

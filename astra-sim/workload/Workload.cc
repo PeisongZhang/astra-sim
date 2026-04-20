@@ -606,6 +606,24 @@ void Workload::report() {
         auto logger = LoggerFactory::get_logger("workload");
         logger->info("sys[{}] peak memory usage: {:.2f} {}", sys->id,
                      peak_mem_usage, unit);
+        // P3-A: enforce an optional VRAM cap and warn when exceeded.
+        if (this->sys->vram_capacity_bytes > 0) {
+            uint64_t peak_bytes =
+                this->local_mem_usage_tracker->getPeakMemUsage();
+            const double cap_gb =
+                static_cast<double>(this->sys->vram_capacity_bytes) /
+                (1024.0 * 1024.0 * 1024.0);
+            if (peak_bytes > this->sys->vram_capacity_bytes) {
+                logger->warn(
+                    "sys[{}] VRAM OVERFLOW: peak={:.2f} {} exceeds "
+                    "vram-capacity-gb={:.2f}",
+                    sys->id, peak_mem_usage, unit, cap_gb);
+            } else {
+                logger->info(
+                    "sys[{}] VRAM OK: peak={:.2f} {} <= cap {:.2f} GB",
+                    sys->id, peak_mem_usage, unit, cap_gb);
+            }
+        }
         this->local_mem_usage_tracker.reset();
     }
 }
