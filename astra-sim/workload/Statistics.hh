@@ -59,6 +59,12 @@ class Statistics {
         std::optional<uint64_t> comm_size;  // Size of communication in bytes
         std::optional<double>
             network_bandwidth;  // Achieved bandwidth in bytes/ns
+        // Chakra node type captured at record_start time; used by
+        // extract_comm_bytes to classify p2p (SEND/RECV) vs collective (COMM_COLL).
+        // Stored as int to avoid pulling proto header into every TU that
+        // includes Statistics.hh (the enum is already brought in via
+        // feeder include below, but keep the field type light).
+        std::optional<int> chakra_node_type;
 
         // remote memory node
 

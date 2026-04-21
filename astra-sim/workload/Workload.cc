@@ -7,6 +7,8 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/common/Logging.hh"
 #include "astra-sim/system/IntData.hh"
+#include "astra-sim/system/Roofline.hh"
+#include "astra-sim/system/Sys.hh"
 #include "astra-sim/system/MemEventHandlerData.hh"
 #include "astra-sim/system/RecvPacketEventHandlerData.hh"
 #include "astra-sim/system/SendPacketEventHandlerData.hh"
@@ -274,7 +276,23 @@ void Workload::issue_comp(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
     }
 
     double operational_intensity = num_ops / tensor_size;
-    double perf = sys->roofline->get_perf(operational_intensity);
+    // correctness_todo.md §4 — per-op-type Roofline: look up the optional
+    // "op_category" int attr (emitted by STG chakra_00_4_backend). If absent
+    // we pass kOpCatUnknown which falls back to the global peak.
+    int op_category = Roofline::kOpCatUnknown;
+    if (node->has_attr("op_category")) {
+        op_category = node->get_attr<int32_t>("op_category",
+                                              Roofline::kOpCatUnknown);
+    }
+    double perf = sys->roofline->get_perf(operational_intensity, op_category);
+    // For reporting purposes record the effective peak under this category
+    // (Statistics compute_utilization normalises against the effective peak,
+    // so softmax nodes aren't compared against GEMM peak which was the old
+    // behaviour when a global fraction was used).
+    double effective_peak =
+        sys->roofline->has_per_category_peaks()
+            ? sys->roofline->get_peak_for_category(op_category)
+            : sys->peak_perf;
     double elapsed_time = static_cast<double>(node->num_ops()) / perf;  // sec
     uint64_t runtime = static_cast<uint64_t>(elapsed_time * 1e9);  // sec -> ns
     if (node->is_cpu_op()) {
@@ -286,10 +304,10 @@ void Workload::issue_comp(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
 
     auto& op_stat = this->stats->get_operator_statistics(node->id());
     op_stat.operation_intensity = operational_intensity;
-    op_stat.compute_utilization = perf / sys->peak_perf;
+    op_stat.compute_utilization = perf / effective_peak;
     op_stat.memory_utilization =
         (perf / operational_intensity) / sys->local_mem_bw;
-    op_stat.is_memory_bound = perf < sys->peak_perf;
+    op_stat.is_memory_bound = perf < effective_peak;
     LoggerFactory::get_logger("workload")
         ->debug("operation_intensity={}, perf={}, elapsed_time={} "
                 "compute_utilization={} memory_utilization={} tensor_size={} "

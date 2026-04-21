@@ -30,8 +30,10 @@ void Statistics::record_start(std::shared_ptr<Chakra::ETFeederNode> node,
                               Tick start_time) {
     const NodeId& node_id = node->id();
     const auto type = OperatorStatistics::get_operator_type(node);
-    operator_statistics[node_id] =
-        OperatorStatistics(node_id, start_time, type);
+    auto& stat = operator_statistics[node_id];
+    stat = OperatorStatistics(node_id, start_time, type);
+    // Capture the Chakra node type for downstream p2p/coll classification.
+    stat.chakra_node_type = static_cast<int>(node->type());
     start_times.insert({start_time, node_id});
 }
 
@@ -302,20 +304,25 @@ void Statistics::extract_comm_bytes() {
     this->total_comm_bytes_ = 0;
     this->total_p2p_bytes_ = 0;
     this->total_coll_bytes_ = 0;
-    // Walk feeder's per-op record to classify comm sub-type via node_id ->
-    // stat lookup. node_type is not stored in OperatorStatistics, so we use
-    // a heuristic: bandwidth field is only set on SEND/RECV; coll ops lack
-    // it. This is coarse but matches the current Statistics plumbing.
+    // Classify via the authoritative Chakra node type captured at
+    // record_start. The old heuristic (network_bandwidth.has_value()) was
+    // broken because both SEND/RECV and collective completion callbacks
+    // write network_bandwidth, so every comm op was counted as p2p.
     for (const auto& [node_id, stat] : operator_statistics) {
         if (stat.type != OperatorStatistics::OperatorType::COMM)
             continue;
         if (!stat.comm_size.has_value())
             continue;
-        uint64_t b = stat.comm_size.value();
+        if (!stat.chakra_node_type.has_value())
+            continue;
+        const uint64_t b = stat.comm_size.value();
         this->total_comm_bytes_ += b;
-        if (stat.network_bandwidth.has_value()) {
+        const auto ntype =
+            static_cast<ChakraNodeType>(stat.chakra_node_type.value());
+        if (ntype == ChakraNodeType::COMM_SEND_NODE ||
+            ntype == ChakraNodeType::COMM_RECV_NODE) {
             this->total_p2p_bytes_ += b;
-        } else {
+        } else if (ntype == ChakraNodeType::COMM_COLL_NODE) {
             this->total_coll_bytes_ += b;
         }
     }

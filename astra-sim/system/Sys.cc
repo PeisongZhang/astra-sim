@@ -419,6 +419,36 @@ bool Sys::initialize_sys(string name) {
                 double frac = j["peak-perf-achievable-fraction"];
                 roofline->set_achievable_fraction(frac);
             }
+            // correctness_todo.md §4 — optional per-op-type peak table.
+            // Accepts string keys (GEMM/ELEMWISE/SOFTMAX/REDUCE/OTHER) or
+            // numeric ids. Values are TFLOPs (same unit as peak-perf).
+            if (j.contains("peak-perf-per-op-category")) {
+                const auto& m = j["peak-perf-per-op-category"];
+                for (auto it = m.begin(); it != m.end(); ++it) {
+                    const std::string key = it.key();
+                    int cat = Roofline::kOpCatUnknown;
+                    if (key == "GEMM" || key == "gemm" || key == "0") {
+                        cat = Roofline::kOpCatGEMM;
+                    } else if (key == "ELEMWISE" || key == "elemwise" ||
+                               key == "1") {
+                        cat = Roofline::kOpCatElemwise;
+                    } else if (key == "SOFTMAX" || key == "softmax" ||
+                               key == "2") {
+                        cat = Roofline::kOpCatSoftmax;
+                    } else if (key == "REDUCE" || key == "reduce" ||
+                               key == "3") {
+                        cat = Roofline::kOpCatReduce;
+                    } else if (key == "OTHER" || key == "other" ||
+                               key == "4") {
+                        cat = Roofline::kOpCatOther;
+                    } else {
+                        // Unknown key — skip; global fallback stays in force.
+                        continue;
+                    }
+                    const double tflops = it.value();
+                    roofline->set_peak_per_category(cat, tflops * 1e12);
+                }
+            }
         }
     }
     this->trace_enabled = false;

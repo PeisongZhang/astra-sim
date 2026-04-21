@@ -127,15 +127,38 @@ workload 生成的 .et 文件（共 1536 个）未被复制进这份清单，存
 |------|---------:|------------:|---------:|------|
 | **baseline** b=2 / 1f1b / v=1  | **14.19** | **140.5** | **+1.8%** | 主表行，论文最靠拢点 |
 | b=4 / 1f1b / v=1               | 14.74    | 130.4     | −5.5%    | 论文 Fig 16 方向对照；b=4 下 1F1B bubble 略大 |
-| b=2 / **1f1b-interleaved** / v=2 | 21.25    | 90.4      | −34.5%   | 见下 |
+| b=2 / 1f1b-interleaved / v=2（修复前）| 21.25    | 90.4      | −34.5%   | 半实现；见 §4.2a |
+| **b=2 / 1f1b-interleaved / v=2（修复后）** | **12.38** | **161.1** | **+16.7%** | correctness_todo.md#1 修复后实测，见 §4.2a |
 | b=1 / 1f1b / v=1               | OOM      | —         | —        | 48 个 micro-batch 的 workload 让单次仿真 RSS 接近 29 GB，30 GB 机器上 thrash，未能跑完 |
 
-**交错式调度 v=2 反而变慢了**：`dnn_workload/symbolic_tensor_graph/symbolic_tensor_graph/graph/pipeline_schedule.py:296-312` 里 `_apply_1f1b_interleaved_to_rank` 本身目前 fallback 到 mb-粒度的 1F1B（里面有 TODO 说要等 block→chunk 的 metadata 从 `_create_pipeline_tensor_map` 透出来）。而 `virtual_stages=2` 会让 `_create_pipeline_tensor_map_mix_precision` 用 round-robin 分块映射（`main.py:41-49`），结果：
+#### 4.2a 交错式调度修复：从 −34.5% 退化到 +12.8% 加速
+
+**修复前状况**：`dnn_workload/symbolic_tensor_graph/symbolic_tensor_graph/graph/pipeline_schedule.py:296-312` 里 `_apply_1f1b_interleaved_to_rank` 原来 fallback 到 mb-粒度的 1F1B（里面有 TODO 说要等 block→chunk 的 metadata 从 `_create_pipeline_tensor_map` 透出来）。而 `virtual_stages=2` 会让 `_create_pipeline_tensor_map_mix_precision` 用 round-robin 分块映射（`main.py:41-49`），结果：
 
 - **图** 确实变成了交错布局（每个 device 拿到 2 个非连续 chunk）
 - **调度** 却没给交错带来的 bubble 缩减 —— 仍然是 `_apply_1f1b_to_rank` 那套 mb-粒度串行
 
-没有调度收益、却付出了更多 cross-pp p2p 过境代价 → wall 从 14.19 → 21.25 s。这是一个 **真正的"半实现"带来的退化**；要真正拿到论文 §5.3.2 的 ~10% 正收益，需要把 block → chunk-on-device 的映射数据结构透出去让 `_apply_1f1b_interleaved_to_rank` 能按 chunk 粒度串事件，这是一条大工程（见 §9.3）。目前的 STG 开了 interleaved 不开更好。
+没有调度收益、却付出了更多 cross-pp p2p 过境代价 → wall 从 14.19 → 21.25 s（−34.5%）。
+
+**修复实现**：`correctness_todo.md` §1 对应的 commit。三处变化：
+
+1. `main._create_pipeline_tensor_map[_mix_precision]` 额外产出 `block_to_chunk_local: dict[block_idx -> chunk_on_device]`，沿 dense/gpt/moe 三条路径传到 `_postprocess_chakra_graph(..., block_to_chunk_local=...)` → `PipelineScheduleInjector.apply(..., block_to_chunk_local=...)`。
+2. `_build_1f1b_interleaved_sequence` 按 Megatron-LM `megatron.core.pipeline_parallel.schedules` 的公式重写：`warmup = (p - rank - 1) * 2 + (v - 1) * p`（clip 到 `v*num_mb`），`mb = (k // (p*v)) * p + k % p`，`chunk_F = (k % (p*v)) // p`，`chunk_B = v - 1 - chunk_F`；steady 阶段 **F 在 B 之前** 调度（initial 版本把 B 放前面导致 rank p-1 在第一次 B 时对应的 F 还没跑，引发 cross-pp 死锁，512 GPU 仿真 35328 个 pending RECV 全卡住）。
+3. `_apply_1f1b_interleaved_to_rank` 改为对 **只 COMP 节点** 分桶为 `(mb, phase, chunk_on_device)`，按 seq 相邻 pair 注入 ctrl_deps；shadow/RECV 节点走 data_deps 自然排序，不参与分桶以保证 SEND/RECV 能跟 COMP 并行。
+
+**修复后实测**（39.1B, b=2, v=2, 512 GPU, AR=on）：
+
+| 量 | baseline | 修复后 | Δ |
+|----|---------:|------:|--:|
+| wall cycles | 14,194,697,459 | 12,382,114,950 | **−12.77%**（**加速**）|
+| TFLOP/s/GPU | 140.52 | 161.09 | +14.6% |
+| 暴露通信 cycles | 7,888,998,747 | 6,076,416,238 | −22.97% |
+| exposed / wall | 55.6% | 49.1% | −6.5 pp |
+| Δ vs 论文 138 | +1.8% | +16.7% | — |
+
+加速幅度 12.8%（按 wall 时间）落在论文 §5.3.2 报告的 5–15% 区间的上沿，且 exposed comm 下降 23% 表明 bubble 被有效填充；**修复前付出更多 p2p 代价、修复后同一 p2p 流量被 chunk-level 调度吸收并掩盖在 compute 下**，物理图景一致。
+
+**回归测试**：`test_cases/test_pipeline_interleaved.py` 新增 4 个用例（序列匹配 Megatron、chunk 分类、完整注入 31 条 pair 链、v=1 fallback），全部通过。
 
 ### 4.3 为什么 AR=off 行仍然偏高 ≈ +15%
 
@@ -308,13 +331,19 @@ python collect_and_compare.py   # 输出 report.md / report.csv
 1. ~~修 STG 的 AR bug~~ → §5；AR-on 两行 |Δ| ≤ 2%。
 2. ~~拓扑升级到三级 fat-tree~~ → §7；builder 已参数化，实测回退到 2-level（确定性路由下 3-level 切 BW 反而拉慢）。
 3. ~~micro-batch sweep~~ → §4.2 表；39.1B b=2 最优（+1.8%），b=4 −5.5%，b=1 OOM（30 GB 机器仿真内存上限）。
-4. ~~开交错式调度~~ → §4.2 实测，现状 `PP_SCHEDULE=1f1b-interleaved` 在 STG 里是"半实现"（graph 交错、schedule 不交错）→ 反而 −34.5%，**不要开**；真正修复方案见 9.2#1。
+4. ~~开交错式调度~~ → §4.2 / §4.2a 实测，原始 `PP_SCHEDULE=1f1b-interleaved` 是"半实现"（graph 交错、schedule 不交错）→ −34.5%；**已修复**（`correctness_todo.md` §1），修复后 +16.7% vs 论文 138、相对 baseline **加速 12.8%**，落在论文 §5.3.2 报告的 5–15% 区间。
+5. ~~修复交错式调度 chunk-level ctrl_deps~~ → §4.2a；同时暴露并修掉了 steady 阶段 F/B 顺序反了导致的 rank p-1 cross-pp 死锁。
+6. ~~修复 `Statistics.cc::extract_comm_bytes` p2p/coll 误分类~~ → `correctness_todo.md` §2：原启发式用 `network_bandwidth.has_value()` 导致 coll 恒为 0；现改为按 `ChakraNodeType`（COMM_SEND/RECV→p2p，COMM_COLL→coll）精确分桶。验证：(a) pure-DP allgather smoke `p2p=0, coll=total` ✅；(b) 39B (PP=2 + TP=8 + DP=32) 全 512 rank `p2p=75.5MB coll=95.4GB` 总和等于 `95.437GB`，`p2p + coll == total` 对每 rank 成立 ✅（日志 `gpt_39b_512/run_analytical.log.correctness_all_fixes`）。
+7. ~~修复 `_print_gpu_vram` 硬编码 `keep_ratio=0.2`~~ → `correctness_todo.md` §3：AR=on 时不再缩放，改为打印上界 + "peak memory usage 为权威"提示；`test_vram_ar_note.py` 3 项回归通过。
+8. ~~Roofline 加 per-op-type 支持~~ → `correctness_todo.md` §4：Chakra COMP_NODE 新增 `op_category` int32 attr（STG 侧 `M→GEMM, CUSTOM→SOFTMAX, A/E→ELEMWISE, B→REDUCE, 其余→OTHER`），Roofline 接受 `peak-perf-per-op-category` JSON 表。三级验证：(a) STG 侧 7 项单元测试（`test_op_category_labeling.py`），`workload.0.et` 16826 COMP_NODE 全部标签齐全；(b) C++ 侧合成 2-rank scaling 测试 `tests/roofline_per_op/run.sh`，SOFTMAX peak=100 TFLOP/s 对 GEMM peak=400 TFLOP/s 的 wall 比值 = **4.000** ∈ [3.6, 4.4] ✅；(c) 39B 全规模开启 `{GEMM:312, ELEMWISE:90, SOFTMAX:60, REDUCE:40}` 后 `sys[0] wall` 与 interleaved_fixed 基线一致（12,382,114,950 cycles），`compute_utilization 98.179% vs 98.154%` 微增——验证 per-op 归一化生效；wall 不变是物理正确（`operation_intensity=2942.6` 下 ELEMWISE/SOFTMAX 是 bandwidth-bound，降低 peak 不改变 elapsed_time）。
 
 ### 9.2 还可以做的事（按 ROI 排序）
 
-1. **交错式调度的 chunk-level 调度**（§4.2 实测发现开了反而 −34.5%，不是一个简单的参数开关）。论文 §5.3.2 报 ~10% 正增益。修这条线要做两件事：
-    - 在 `graph_distributer.py` 把每个 block 记下它属于哪个 `chunk_on_device` 并随 `HybridGraph` 透出来（现在只留在 `_create_pipeline_tensor_map_mix_precision` 的局部变量里就丢了）
-    - 扩 `_apply_1f1b_interleaved_to_rank` 让它真正按 `(mb, chunk)` 二元序列 `_build_1f1b_interleaved_sequence` 产出的 ctrl_deps，而不是 fallback 到 `_apply_1f1b_to_rank`
-2. **把 `active-chunks-per-dimension` 这类 collective 旋钮从 `astra_system.json` 改成可以从环境变量覆盖**（目前只能改 JSON 然后手动同步到 4 个 bundle），做 sweep 成本更低。
-3. **拓扑 / 路由**：当前 analytical 后端是确定性最短路径；要真正从 3-level fat-tree 拿到好处，需要 ECMP 或 adaptive routing（或者至少 collective 侧知道有多条等价路径、把 chunk 分流到不同 ring），这是一条较大的工程线。
-4. **内存上限**：仿真 39.1B b=1（48 mbs/rank）时单进程 RSS ≈ 29 GB 挤爆 30 GB 机器。看起来是把每个 rank 的 et 事件全展在内存里，能优化为流式消费 `.et` 的话就可以无代价跑更大 workload（或多进程并行）。
+1. ~~**交错式调度的 chunk-level 调度**~~ → §4.2a 修复已落地，9.1#5。
+2. ~~**Statistics p2p/coll 分类**~~ → 9.1#6 修复。
+3. ~~**VRAM AR keep_ratio 硬编码**~~ → 9.1#7 修复。
+4. ~~**Roofline per-op-type**~~ → 9.1#8 修复。
+5. **把 `active-chunks-per-dimension` 这类 collective 旋钮从 `astra_system.json` 改成可以从环境变量覆盖**（目前只能改 JSON 然后手动同步到 4 个 bundle），做 sweep 成本更低。
+6. **拓扑 / 路由**：当前 analytical 后端是确定性最短路径；要真正从 3-level fat-tree 拿到好处，需要 ECMP 或 adaptive routing（或者至少 collective 侧知道有多条等价路径、把 chunk 分流到不同 ring），这是一条较大的工程线。
+7. **内存上限**：仿真 39.1B b=1（48 mbs/rank）时单进程 RSS ≈ 29 GB 挤爆 30 GB 机器。看起来是把每个 rank 的 et 事件全展在内存里，能优化为流式消费 `.et` 的话就可以无代价跑更大 workload（或多进程并行）。
+8. **per-op-type peak 的参数标定**：当前示例值 `{GEMM:312, ELEMWISE:90, SOFTMAX:60, REDUCE:40}` 沿用了 `implementation_plan_zh.md` §P2-B 的占位数字，尚未对 A100 实测算子吞吐回归校准。建议在小批 `qwen_32b` 上做一次 peak sweep，落地到 `reference_zh.md` §3。
