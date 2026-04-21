@@ -21,6 +21,15 @@ NETWORK="${SCRIPT_DIR:?}/analytical_network.yml"
 LOG_FILE="${SCRIPT_DIR:?}/run_analytical.log"
 NUM_QUEUES_PER_DIM="${ANALYTICAL_NUM_QUEUES_PER_DIM:-1}"
 
+# --- Chunk-level trace (optional) ---
+# Set ENABLE_TRACE=1 to dump a per-chunk trace for offline traffic-matrix
+# extraction (see traffic_analysis/extract_traffic_matrix_analytical.py).
+if [ "${ENABLE_TRACE:-0}" = "1" ]; then
+    export ASTRA_ANALYTICAL_ENABLE_TRACE=1
+    export ASTRA_ANALYTICAL_TRACE_FILE="${ASTRA_ANALYTICAL_TRACE_FILE:-${SCRIPT_DIR:?}/analytical_trace.txt}"
+    echo "[ASTRA-sim] Chunk-level trace enabled, writing to ${ASTRA_ANALYTICAL_TRACE_FILE}"
+fi
+
 # --- Run ---
 echo "[ASTRA-sim] Running with analytical congestion-aware backend (custom topology)..."
 "${ASTRA_SIM:?}" \

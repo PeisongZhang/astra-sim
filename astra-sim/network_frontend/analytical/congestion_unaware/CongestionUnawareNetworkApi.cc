@@ -50,6 +50,10 @@ int CongestionUnawareNetworkApi::sim_send(void* const buffer,
             : CongestionUnawareNetworkApi::chunk_id_generator
                   .create_send_chunk_id(tag, src, dst, count);
 
+    // record send_time so that process_chunk_arrival can emit a trace line
+    // spanning [send_time, finish_time]
+    const auto send_time_ns = event_queue->get_current_time();
+
     // search tracker
     const auto entry =
         callback_tracker.search_entry(tag, src, dst, count, chunk_id);
@@ -57,12 +61,14 @@ int CongestionUnawareNetworkApi::sim_send(void* const buffer,
         // recv operation already issued.
         // add send event handler to the tracker
         entry.value()->register_send_callback(msg_handler, fun_arg);
+        entry.value()->set_send_time(send_time_ns);
     } else {
         // recv operation not issued yet
         // create new entry and insert send callback
         auto* const new_entry =
             callback_tracker.create_new_entry(tag, src, dst, count, chunk_id);
         new_entry->register_send_callback(msg_handler, fun_arg);
+        new_entry->set_send_time(send_time_ns);
     }
 
     // create chunk

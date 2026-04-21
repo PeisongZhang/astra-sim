@@ -12,7 +12,8 @@ using namespace AstraSimAnalytical;
 CallbackTrackerEntry::CallbackTrackerEntry() noexcept
     : send_event(std::nullopt),
       recv_event(std::nullopt),
-      transmission_finished(false) {}
+      transmission_finished(false),
+      send_time(std::nullopt) {}
 
 void CallbackTrackerEntry::register_send_callback(
     const Callback callback, const CallbackArg arg) noexcept {
@@ -81,4 +82,17 @@ bool CallbackTrackerEntry::has_send_handler() const noexcept {
 
 bool CallbackTrackerEntry::has_recv_handler() const noexcept {
     return recv_event.has_value();
+}
+
+void CallbackTrackerEntry::set_send_time(const EventTime t) noexcept {
+    send_time = t;
+}
+
+bool CallbackTrackerEntry::has_send_time() const noexcept {
+    return send_time.has_value();
+}
+
+EventTime CallbackTrackerEntry::get_send_time() const noexcept {
+    assert(send_time.has_value());
+    return send_time.value();
 }

@@ -5,6 +5,7 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/common/Logging.hh"
 #include "common/CmdLineParser.hh"
+#include "common/TraceManager.hh"
 #include "congestion_unaware/CongestionUnawareNetworkApi.hh"
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
@@ -46,6 +47,9 @@ int main(int argc, char* argv[]) {
         cmd_line_parser.get<bool>("rendezvous-protocol");
 
     AstraSim::LoggerFactory::init(logging_configuration, logging_folder);
+
+    // Open trace file if enabled (controlled by ASTRA_ANALYTICAL_ENABLE_TRACE).
+    TraceManager::init();
 
     // Instantiate event queue
     const auto event_queue = std::make_shared<EventQueue>();
@@ -105,6 +109,9 @@ int main(int argc, char* argv[]) {
         delete it;
     }
     systems.clear();
+
+    // Flush and close trace file before exit.
+    TraceManager::finalize();
 
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();

@@ -6,6 +6,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/common/Logging.hh"
 #include "astra-sim/system/BaseStream.hh"
 #include "common/CmdLineParser.hh"
+#include "common/TraceManager.hh"
 #include "congestion_aware/CongestionAwareNetworkApi.hh"
 #include <iostream>
 #include <cstdlib>
@@ -213,6 +214,9 @@ int main(int argc, char* argv[]) {
 
     AstraSim::LoggerFactory::init(logging_configuration, logging_folder);
 
+    // Open trace file if enabled (controlled by ASTRA_ANALYTICAL_ENABLE_TRACE).
+    TraceManager::init();
+
     // Instantiate event queue
     const auto event_queue = std::make_shared<EventQueue>();
     Topology::set_event_queue(event_queue);
@@ -330,6 +334,9 @@ int main(int argc, char* argv[]) {
         delete it;
     }
     systems.clear();
+
+    // Flush and close trace file before exit.
+    TraceManager::finalize();
 
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();

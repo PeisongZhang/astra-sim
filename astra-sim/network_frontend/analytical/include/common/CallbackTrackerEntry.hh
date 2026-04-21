@@ -82,6 +82,17 @@ class CallbackTrackerEntry {
 
     [[nodiscard]] bool has_recv_handler() const noexcept;
 
+    /**
+     * Record the event-queue time at which the chunk was handed off to the
+     * network backend via sim_send(). Used by the trace/traffic-matrix tooling
+     * to aggregate bytes over arbitrary time windows offline.
+     */
+    void set_send_time(EventTime t) noexcept;
+
+    [[nodiscard]] bool has_send_time() const noexcept;
+
+    [[nodiscard]] EventTime get_send_time() const noexcept;
+
   private:
     /// sim_send() callback event
     std::optional<Event> send_event;
@@ -92,6 +103,9 @@ class CallbackTrackerEntry {
     /// true if the transmission of the chunk is already finished, false
     /// otherwise
     bool transmission_finished;
+
+    /// timestamp (ns) at which sim_send() was called for this chunk
+    std::optional<EventTime> send_time;
 };
 
 }  // namespace AstraSimAnalytical

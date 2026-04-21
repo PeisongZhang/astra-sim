@@ -10,6 +10,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/RendezvousSendData.hh"
 #include "astra-sim/system/SendPacketEventHandlerData.hh"
 #include "astra-sim/workload/Workload.hh"
+#include "common/TraceManager.hh"
 #include <cstdlib>
 #include <cassert>
 #include <sstream>
@@ -156,6 +157,19 @@ void CommonNetworkApi::process_chunk_arrival(void* args) noexcept {
     auto& tracker = CommonNetworkApi::get_callback_tracker();
     const auto entry = tracker.search_entry(tag, src, dest, count, chunk_id);
     assert(entry.has_value());  // entry must exist
+
+    // emit chunk-level trace line if enabled. Done before invoking callbacks
+    // (which may pop the entry) so the send_time is still reachable.
+    if (TraceManager::enabled() && entry.value()->has_send_time()) {
+        const auto finish_time_ns = event_queue->get_current_time();
+        TraceManager::write_chunk(src,
+                                  dest,
+                                  count,
+                                  entry.value()->get_send_time(),
+                                  finish_time_ns,
+                                  chunk_id,
+                                  tag);
+    }
 
     // if both callbacks are registered, invoke both callbacks
     if (entry.value()->both_callbacks_registered()) {
