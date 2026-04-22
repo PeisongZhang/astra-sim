@@ -11,7 +11,11 @@ if (NOT CMAKE_BUILD_TYPE)
 endif ()
 # set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -Wextra -Wuninitialized -Wunused-function -Wno-unused-parameter -Wno-empty-body -fsanitize=address,undefined,leak -g")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -Wextra -Wuninitialized -Wunused-function -Wno-unused-parameter -Wno-empty-body -g")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+# Release: per §11.3 lever #1, enable -march=native + -DNDEBUG. LTO is skipped because
+# fmt and spdlog ship two versions in this tree (extern/helper/fmt vs extern/helper/spdlog/fmt)
+# whose `detail::buffer<T>` layouts differ — LTO merges them into one ODR violation and
+# segfaults on first flow. Re-evaluate after unifying the fmt vendoring.
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
 
 # TODO: Remove this once binary_function deprecation is resolved.
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error")

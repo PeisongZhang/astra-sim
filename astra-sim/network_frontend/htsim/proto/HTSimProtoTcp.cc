@@ -52,10 +52,24 @@ static void print_path(std::ofstream &paths,const Route* rt){
 
 // Impl constructor that loads config for session
 HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** argv) {
-    eventlist.setEndtime(timeFromSec(4));
+    // Default 1000s simulation window. Large enough to cover 1024-NPU megatron
+    // workloads that take ~15s simtime on analytical.  Overridable via
+    // ASTRASIM_HTSIM_ENDTIME_SEC (seconds).
+    double endtime_sec = 1000.0;
+    if (const char* env = std::getenv("ASTRASIM_HTSIM_ENDTIME_SEC")) {
+        double v = std::atof(env);
+        if (v > 0) endtime_sec = v;
+    }
+    eventlist.setEndtime(timeFromSec(endtime_sec));
     c = std::make_unique<Clock>(timeFromSec(50 / 100.), eventlist);
     no_of_nodes = tm->nodes;
     linkspeed = speedFromMbps((double)HOST_NIC);
+    // `custom_topo_file` is the path to ASTRA-sim's Custom topology.txt passed
+    // in via --network-configuration → NetworkParser::get_topology_file.  When
+    // set, we build GenericCustomTopology instead of FatTreeTopology (§11.4).
+    const char* custom_topo_file = (tm->custom_topology_path && tm->custom_topology_path[0])
+                                       ? tm->custom_topology_path
+                                       : nullptr;
 
     int i = 1;
     filename << "logout.dat";
@@ -76,6 +90,10 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i], "-topo")) {
             topo_file = argv[i + 1];
             cout << "FatTree topology input file: " << topo_file << endl;
+            i++;
+        } else if (!strcmp(argv[i], "-topo-custom")) {
+            custom_topo_file = argv[i + 1];
+            cout << "Custom topology input file: " << custom_topo_file << endl;
             i++;
         } else if (!strcmp(argv[i], "UNCOUPLED"))
             algo = UNCOUPLED;
@@ -99,7 +117,15 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 
         i++;
     }
-    srand(time(NULL));
+    // Seed rand()/random() deterministically (matches RoCE proto behaviour).
+    {
+        unsigned int seed = 0xA571A517u;
+        if (const char* env = std::getenv("ASTRASIM_HTSIM_RANDOM_SEED")) {
+            seed = static_cast<unsigned int>(std::strtoul(env, nullptr, 0));
+        }
+        std::srand(seed);
+        ::srandom(seed);
+    }
 
     std::cout << "Using subflow count " << subflow_count << std::endl;
     std::cout << "requested nodes " << no_of_nodes << std::endl;
@@ -122,12 +148,26 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 #endif
 
     logfile->setStartTime(timeFromSec(0));
-    sinkLogger = std::make_unique<TcpSinkLoggerSampling>(timeFromMs(1000), eventlist);
-    logfile->addLogger(*sinkLogger);
+    // Per §11.3 lever #2 — loggers are off by default (set ASTRASIM_HTSIM_LOGGERS=1 to re-enable).
+    // The sampling loggers run at 1 ms / 1 us granularity and burn ~30% of wall time at 1024 NPU.
+    const bool htsim_loggers_enabled = (std::getenv("ASTRASIM_HTSIM_LOGGERS") != nullptr);
+    if (htsim_loggers_enabled) {
+        sinkLogger = std::make_unique<TcpSinkLoggerSampling>(timeFromMs(1000), eventlist);
+        logfile->addLogger(*sinkLogger);
+    }
 
     tcpRtxScanner = std::make_unique<TcpRtxTimerScanner>(timeFromMs(10), eventlist);
-    qlf = std::make_unique<QueueLoggerFactory>(logfile.get(), QueueLoggerFactory::LOGGER_SAMPLING, eventlist);
-    qlf->set_sample_period(timeFromUs(1000.0));
+    // Skip QueueLoggerFactory allocation entirely when loggers are disabled:
+    // LOGGER_EMPTY still allocates a QueueLoggerEmpty EventSource per queue
+    // whose tick `_period` is read from the factory's uninitialized
+    // `_sample_period`, producing an infinite self-reschedule loop at the
+    // same simtime. Topologies accept nullptr qlf (skip per-queue loggers).
+    qlf = nullptr;
+    if (htsim_loggers_enabled) {
+        qlf = std::make_unique<QueueLoggerFactory>(
+            logfile.get(), QueueLoggerFactory::LOGGER_SAMPLING, eventlist);
+        qlf->set_sample_period(timeFromUs(1000.0));
+    }
 
 #if USE_FIRST_FIT
     if (subflow_count==1){
@@ -135,45 +175,37 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
     }
 #endif
 
-#ifdef FAT_TREE
-
-if (topo_file) {
-
-    FatTreeTopology* top_ = FatTreeTopology::load(topo_file, qlf.get(), eventlist, memFromPkt(8),
-    RANDOM, FAIR_PRIO);
-    top = std::unique_ptr<FatTreeTopology>(top_);
-
-    if (top->no_of_nodes() != no_of_nodes) {
-        std::cerr << "Mismatch between connection matrix (" << no_of_nodes
-        << " nodes) and topology (" << top->no_of_nodes() << " nodes)" << endl;
-        exit(1);
+    if (custom_topo_file) {
+        // §11.4: ASTRA-sim Custom topology.txt → htsim GenericCustomTopology.
+        auto gtop = std::make_unique<HTSim::GenericCustomTopology>(&eventlist, qlf.get(), logfile.get());
+        if (!gtop->load(custom_topo_file)) {
+            std::cerr << "Failed to load custom topology file " << custom_topo_file << endl;
+            exit(1);
+        }
+        const uint32_t nhosts = gtop->no_of_hosts();
+        if (nhosts != no_of_nodes) {
+            std::cerr << "Mismatch between workload nodes (" << no_of_nodes
+                      << ") and custom topology hosts (" << nhosts << ")" << endl;
+            exit(1);
+        }
+        top_generic = std::move(gtop);
+        active_topology = top_generic.get();
+    } else if (topo_file) {
+        FatTreeTopology* top_ = FatTreeTopology::load(topo_file, qlf.get(), eventlist, memFromPkt(8),
+                                                     RANDOM, FAIR_PRIO);
+        top = std::unique_ptr<FatTreeTopology>(top_);
+        if (top->no_of_nodes() != no_of_nodes) {
+            std::cerr << "Mismatch between connection matrix (" << no_of_nodes
+                      << " nodes) and topology (" << top->no_of_nodes() << " nodes)" << endl;
+            exit(1);
+        }
+        active_topology = top.get();
+    } else {
+        top = std::make_unique<FatTreeTopology>(no_of_nodes, linkspeed, memFromPkt(8), qlf.get(),
+                                                &eventlist, ff, RANDOM, 0);
+        active_topology = top.get();
     }
-} else {
-        top = std::make_unique<FatTreeTopology>(no_of_nodes, linkspeed, memFromPkt(8), qlf.get(), &eventlist,ff,RANDOM,0);
-    }
-#endif
-
-#ifdef OV_FAT_TREE
-    top = std::make_unique<OversubscribedFatTreeTopology>(logfile.get(), &eventlist,ff);
-#endif
-
-#ifdef MH_FAT_TREE
-    top = std::make_unique<MultihomedFatTreeTopology>(logfile.get(), &eventlist,ff);
-#endif
-
-#ifdef STAR
-    top = std::make_unique<StarTopology>(logfile.get(), &eventlist,ff);
-#endif
-
-#ifdef BCUBE
-    top = std::make_unique<BCubeTopology>(logfile.get(),&eventlist,ff);
-    std::cout << "BCUBE " << K << std::endl;
-#endif
-
-#ifdef VL2
-    top = std::make_unique<VL2Topology>(logfile.get(),&eventlist,ff);
-#endif
-    no_of_nodes = top->no_of_nodes();
+    no_of_nodes = active_topology->no_of_nodes();
     std::cout << "actual nodes " << no_of_nodes << std::endl;
 
     net_paths = new vector<const Route*>**[no_of_nodes];
@@ -200,16 +232,15 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     connID++;
 
     if (!net_paths[src][dst]) {
-        net_paths[src][dst] = top->get_paths(src,dst);
+        net_paths[src][dst] = active_topology->get_paths(src,dst);
     }
 
 
-    if (algo == COUPLED_EPSILON) {
-        mtcp = new MultipathTcpSrc(algo, eventlist, NULL, epsilon);
-    }
-    else {
-        mtcp = new MultipathTcpSrc(algo, eventlist, NULL);
-    }
+    // MultipathTcpSrc schedules a hardcoded event at timeFromSec(3), which
+    // asserts if eventlist.now() already passed 3s — easy to hit on congested
+    // Custom topologies with long BFS paths.  We always run subflow_count=1
+    // for ASTRA-sim so MPTCP coupling is never needed; skip it.
+    mtcp = nullptr;
 
     uint32_t it_sub;
     size_t crt_subflow_count = subflow_count;
@@ -217,10 +248,6 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     cnt_con++;
 
     it_sub = crt_subflow_count > net_paths[src][dst]->size()?net_paths[src][dst]->size():crt_subflow_count;
-
-#ifdef MH_FAT_TREE
-    int use_all = it_sub==net_paths[src][dst]->size();
-#endif
 
     for (uint32_t inter = 0; inter < it_sub; inter++) {
         tcpSrc = new TcpSrc(NULL, NULL, eventlist);
@@ -240,51 +267,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         logfile->writeName(*tcpSnk);
 
         tcpRtxScanner->registerTcp(*tcpSrc);
-        size_t choice = 0;
-
-#ifdef FAT_TREE
-        choice = rand()%net_paths[src][dst]->size();
-#endif
-
-#ifdef OV_FAT_TREE
-        choice = rand()%net_paths[src][dst]->size();
-#endif
-
-#ifdef MH_FAT_TREE
-        if (use_all)
-            choice = inter;
-        else
-            choice = rand()%net_paths[src][dst]->size();
-#endif
-
-#ifdef VL2
-        choice = rand()%net_paths[src][dst]->size();
-#endif
-
-#ifdef STAR
-        choice = 0;
-#endif
-
-#ifdef BCUBE
-        //choice = inter;
-
-        int min = -1, max = -1,minDist = 1000,maxDist = 0;
-        if (subflow_count==1){
-            //find shortest and longest path
-            for (uint32_t dd=0;dd<net_paths[src][dst]->size();dd++){
-                if (net_paths[src][dst]->at(dd)->size()<minDist){
-                    minDist = net_paths[src][dst]->at(dd)->size();
-                    min = dd;
-                }
-                if (net_paths[src][dst]->at(dd)->size()>maxDist){
-                    maxDist = net_paths[src][dst]->at(dd)->size();
-                    max = dd;
-                }
-            }
-            choice = min;
-        } else
-            choice = rand()%net_paths[src][dst]->size();
-#endif
+        size_t choice = rand() % net_paths[src][dst]->size();
         if (choice>=net_paths[src][dst]->size()){
             printf("Weird path choice %lu out of %lu\n",choice,net_paths[src][dst]->size());
             exit(1);
@@ -302,14 +285,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         routein->push_back(tcpSrc);
         extrastarttime = 0 * drand();
 
-        //join multipath connection
-
-        mtcp->addSubflow(tcpSrc);
-
-        if (inter == 0) {
-            mtcp->setName("multipath" + ntoa(src) + "_" + ntoa(dst));
-            logfile->writeName(*mtcp);
-        }
+        // (Multipath join removed — see note above.)
+        (void)inter;
 
         tcpSrc->connect(*routeout, *routein, *tcpSnk, start + timeFromMs(extrastarttime));
 
@@ -326,7 +303,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         if (ff&&!inter)
             ff->add_flow(src,dst,tcpSrc);
 
-        sinkLogger->monitorMultipathSink(tcpSnk);
+        if (sinkLogger) {
+            sinkLogger->monitorMultipathSink(tcpSnk);
+        }
     }
 }
 

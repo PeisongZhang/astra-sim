@@ -40,6 +40,13 @@ class HTSimNetworkApi final : public CommonNetworkApi {
      */
     static void set_topology(std::shared_ptr<Topology> topology_ptr) noexcept;
 
+    /**
+     * Set the dims / bandwidth directly. Used when the htsim frontend
+     * bypasses construct_topology (which doesn't support Custom).
+     */
+    static void set_dims_and_bandwidth(int dims,
+                                       const std::vector<NetworkAnalytical::Bandwidth>& bw_per_dim) noexcept;
+
      static void set_completion_tracker(std::shared_ptr<CompletionTracker> completion_tracker_ptr) noexcept;
     /**
      * Constructor.

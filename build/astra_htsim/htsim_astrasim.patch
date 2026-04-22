@@ -1,35 +1,779 @@
-diff --git a/sim/tcp.cpp b/sim/tcp.cpp
-index 45b54d3..664561b 100755
---- a/sim/tcp.cpp
-+++ b/sim/tcp.cpp
-@@ -185,6 +185,15 @@ TcpSrc::receivePacket(Packet& pkt)
+diff --git a/sim/clock.cpp b/sim/clock.cpp
+index 97566a8..91f27ce 100755
+--- a/sim/clock.cpp
++++ b/sim/clock.cpp
+@@ -13,12 +13,21 @@ Clock::Clock(simtime_picosec period, EventList& eventlist)
+ void
+ Clock::doNextEvent() {
+     eventlist().sourceIsPendingRel(*this, _period);
+-    if (_smallticks<10) {
+-        cout << '.' << flush;
+-        _smallticks++;
+-    }
+-    else {
+-        cout << '|' << flush;
+-        _smallticks=0;
++    // AstraSim: the dot/pipe per-tick output can dominate disk when
++    // ASTRA-sim runs htsim for hundreds of seconds simtime (30 GB seen
++    // at 128 NPU/300s).  Silence by default; restore with
++    // ASTRASIM_HTSIM_VERBOSE.
++    static const bool _astrasim_verbose = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++    if (_astrasim_verbose) {
++        if (_smallticks<10) {
++            cout << '.' << flush;
++            _smallticks++;
++        } else {
++            cout << '|' << flush;
++            _smallticks=0;
++        }
++    } else {
++        if (_smallticks<10) _smallticks++;
++        else _smallticks = 0;
+     }
+ }
+diff --git a/sim/hpcc.cpp b/sim/hpcc.cpp
+index f393b6a..9cf8fdc 100755
+--- a/sim/hpcc.cpp
++++ b/sim/hpcc.cpp
+@@ -62,7 +62,8 @@ HPCCSrc::HPCCSrc(HPCCLogger* logger, TrafficLogger* pktlogger, EventList &eventl
+     _node_num = _global_node_count++;
+     _nodename = "HPCCsrc " + to_string(_node_num);
  
-     if (seqno >= _flow_size){
-         cout << "Flow " << nodename() << " finished at " << timeAsMs(eventlist().now()) << endl;        
-+        // AstraSim entry point
-+        // Use IDs memorized at point of adding the flow, as well as unique src tag for the transition
-+        if (astrasim_flow_finish_send_cb) {
+-    srand(time(NULL));
++    // AstraSim: upstream re-seeds rand() from wall-time on every HPCCSrc ctor,
++    // same issue as RoCE.  HTSim frontend seeds once during session init.
+     _pathid = random()%256;
+ 
+     _Wai = _mss;
+@@ -113,7 +114,9 @@ void HPCCSrc::log_me() {
+ }
+ 
+ void HPCCSrc::startflow(){
+-    cout << "startflow " << _flow._name << " at " << timeAsUs(eventlist().now()) << endl;
++    static const bool _astrasim_verbose_startflow = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++    if (_astrasim_verbose_startflow)
++        cout << "startflow " << _flow._name << " at " << timeAsUs(eventlist().now()) << endl;
+     _flow_started = true;
+     _highest_sent = 0;
+     _last_acked = 0;
+@@ -208,7 +211,22 @@ void HPCCSrc::processAck(const HPCCAck& ack) {
+     if (_logger) _logger->logHPCC(*this, HPCCLogger::HPCC_RCV);
+ 
+     if (ackno >= _flow_size){
+-        cout << "Flow " << _name << " finished at " << timeAsUs(eventlist().now()) << " total bytes " << ackno << endl;
++        static const bool _astrasim_verbose_hpcc = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++        if (_astrasim_verbose_hpcc) {
++            cout << "Flow " << _name << " finished at " << timeAsUs(eventlist().now()) << " total bytes " << ackno << endl;
++        }
++        // AstraSim hook — fire send-finished callback exactly once.
++        if (astrasim_flow_finish_send_cb && !_astrasim_send_finished) {
++            _astrasim_send_finished = true;
 +            int tag = _flow.flow_id();
 +            int src_id = _debug_srcid;
 +            int dst_id = _debug_dstid;
-+            std::cout << "Finish sending flow " << tag << " from " << src_id << " to " << dst_id << std::endl;
++            if (_astrasim_verbose_hpcc) {
++                std::cout << "Finish sending flow " << tag << " from " << src_id
++                          << " to " << dst_id << std::endl;
++            }
++            astrasim_flow_finish_send_cb(src_id, dst_id, _flow_size, tag);
++        }
+         _done = true;
+         if (_end_trigger) {
+             _end_trigger->activate();
+@@ -374,6 +392,10 @@ double HPCCSrc::measureInFlight(const HPCCAck& ack){
+     }
+     else {    //reset path state
+         _link_count = ack._int_hop;
++        // AstraSim (P4): grow _link_info to fit; vector-backed now.
++        if (_link_info.size() < _link_count) {
++            _link_info.resize(_link_count);
++        }
+         for (i = 0;i<_link_count;i++)
+             _link_info[i] = ack._int_info[i];
+     }
+@@ -495,7 +517,17 @@ void HPCCSink::receivePacket(Packet& pkt) {
+     } else if (seqno < _cumulative_ack+1) {
+         //must have been a bad retransmit
+     }
+-    send_ack(ts,p->_int_info, p->_int_hop);
++    // AstraSim (P4): _int_info is a std::vector — pass its data() pointer.
++    send_ack(ts, p->_int_info.data(), p->_int_hop);
++    // AstraSim hook — fire receive-finished callback exactly once.
++    if (astrasim_flow_finish_recv_cb && _cumulative_ack + 1 >= _src->_flow_size
++        && !_astrasim_recv_finished) {
++        _astrasim_recv_finished = true;
++        int tag = _src->flow_id();
++        int src_id = _debug_srcid;
++        int dst_id = _debug_dstid;
++        astrasim_flow_finish_recv_cb(src_id, dst_id, _src->_flow_size, tag);
++    }
+     // have we seen everything yet?
+     pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
+     pkt.free();
+diff --git a/sim/hpcc.h b/sim/hpcc.h
+index b028285..dcb129c 100755
+--- a/sim/hpcc.h
++++ b/sim/hpcc.h
+@@ -10,6 +10,7 @@
+ 
+ #include <list>
+ #include <map>
++#include <vector>
+ //#include "util.h"
+ #include "math.h"
+ #include "config.h"
+@@ -104,7 +105,13 @@ public:
+     void log_me();
+     bool _log_me;
+ 
+-    static uint32_t _global_node_count; 
++    // AstraSim hooks
++    void (*astrasim_flow_finish_send_cb)(int, int, int, int) = nullptr;
++    int _debug_srcid = -1;
++    int _debug_dstid = -1;
++    bool _astrasim_send_finished = false;
++
++    static uint32_t _global_node_count;
+     static uint32_t _global_rto_count;  // keep track of the total number of timeouts across all srcs
+ 
+     //HPCC specific parameters (globals)
+@@ -115,7 +122,11 @@ public:
+     static uint32_t _Wai;//Additive increase amount.
+ 
+ private:
+-    IntEntry _link_info[5];
++    // AstraSim (P4): was IntEntry _link_info[5].  Made a std::vector so
++    // _link_count (set from ack._int_hop) can grow beyond the upstream
++    // 3-tier FatTree assumption of 4 switch hops.  measureInFlight resizes
++    // before writing.
++    std::vector<IntEntry> _link_info;
+     uint32_t _link_count;
+     HPCCPacket::seq_t _last_update_seq;
+     HPCCPacket::seq_t _cwnd, _flightsize, _Wc;
+@@ -173,9 +184,15 @@ public:
+     bool _log_me;
+ 
+     uint32_t _srcaddr;
+-    
++
++    // AstraSim hooks
++    void (*astrasim_flow_finish_recv_cb)(int, int, int, int) = nullptr;
++    int _debug_srcid = -1;
++    int _debug_dstid = -1;
++    bool _astrasim_recv_finished = false;
++
+ private:
+- 
++
+     // Connectivity
+     void connect(HPCCSrc& src, Route* route);
+ 
+diff --git a/sim/hpccpacket.cpp b/sim/hpccpacket.cpp
+index 02cd203..859da4a 100755
+--- a/sim/hpccpacket.cpp
++++ b/sim/hpccpacket.cpp
+@@ -6,8 +6,7 @@ PacketDB<HPCCAck> HPCCAck::_packetdb;
+ PacketDB<HPCCNack> HPCCNack::_packetdb;
+ 
+ void HPCCAck::copy_int_info(IntEntry* info, int cnt){
+-    for (int i = 0;i<cnt;i++)
+-        _int_info[i] = info[i];
+-        
++    // AstraSim (P4): _int_info is a std::vector now — assign grows as needed.
++    _int_info.assign(info, info + cnt);
+     _int_hop = cnt;
+ };
+diff --git a/sim/hpccpacket.h b/sim/hpccpacket.h
+index ef602ff..51825e0 100755
+--- a/sim/hpccpacket.h
++++ b/sim/hpccpacket.h
+@@ -3,6 +3,7 @@
+ #define HPCCPACKET_H
+ 
+ #include <list>
++#include <vector>
+ #include "network.h"
+ 
+ // NdpPacket and NdpAck are subclasses of Packet.
+@@ -71,7 +72,7 @@ public:
+   
+     void free() {_packetdb.freePacket(this);}
+     virtual ~HPCCPacket(){}
+-    
++
+     inline seq_t seqno() const {return _seqno;}
+     inline bool retransmitted() const {return _retransmitted;}
+     inline bool last_packet() const {return _last_packet;}
+@@ -79,7 +80,15 @@ public:
+     inline void set_ts(simtime_picosec ts) {_ts = ts;}
+     inline uint32_t path_id() const {if (_pathid!=UINT32_MAX) return _pathid; else return _route->path_id();}
+     virtual PktPriority priority() const {return Packet::PRIO_LO;}
+-    IntEntry _int_info[5];
++    // AstraSim (P4): upstream caps HPCC INT entries at 5, assuming a 3-tier
++    // FatTree fabric (max 4 switch hops).  ASTRA-sim topologies can traverse
++    // arbitrarily deep paths; switch to std::vector so deeper paths grow
++    // dynamically at each hop and we don't have to recompile to change
++    // INT capacity.  queue_lossless_output resizes before writing; packets
++    // pooled via PacketDB keep their vectors between uses — this is fine
++    // because writes always advance _int_hop from 0 and callers never read
++    // past _int_hop.
++    std::vector<IntEntry> _int_info;
+     uint32_t _int_hop;
+     const static int ACKSIZE=64;
+ protected:
+@@ -120,7 +129,8 @@ public:
+   
+     virtual ~HPCCAck(){}
+ 
+-    IntEntry _int_info[5];
++    // AstraSim (P4): see matching comment on HPCCPacket._int_info.
++    std::vector<IntEntry> _int_info;
+     uint32_t _int_hop;
+ protected:
+     seq_t _ackno;
+diff --git a/sim/network.h b/sim/network.h
+index 5aa9736..bf55f17 100755
+--- a/sim/network.h
++++ b/sim/network.h
+@@ -155,6 +155,10 @@ class Packet {
+     void set_ingress_queue(LosslessInputQueue* t){assert(!_ingressqueue); _ingressqueue = t;}
+     LosslessInputQueue* get_ingress_queue(){assert(_ingressqueue); return _ingressqueue;}
+     void clear_ingress_queue(){assert(_ingressqueue); _ingressqueue = NULL;}
++    // AstraSim: non-asserting probe used to detect the first-hop case where
++    // a sender (RoceSrc/TcpSrc) invokes sendOn() without going through a
++    // LosslessInputQueue, so the packet has no ingress tag yet.
++    bool has_ingress_queue() const { return _ingressqueue != NULL; }
+ 
+     //    void set_detour(PacketSink* n, int rewind) {_detour = n;_nexthop -= rewind;}
+     
+diff --git a/sim/pipe.h b/sim/pipe.h
+index e0dbf8c..4cd5c5d 100755
+--- a/sim/pipe.h
++++ b/sim/pipe.h
+@@ -25,6 +25,10 @@ class Pipe : public EventSource, public PacketSink, public Drawable {
+     virtual void receivePacket(Packet& pkt); // inherited from PacketSink
+     virtual void doNextEvent(); // inherited from EventSource
+     simtime_picosec delay() { return _delay; }
++    // AstraSim/OCS hook — dynamically change propagation delay at run time.
++    // Existing in-flight packets keep their original delivery time; only
++    // packets that enter the pipe after this call see the new delay.
++    void setDelay(simtime_picosec new_delay) { _delay = new_delay; }
+     const string& nodename() { return _nodename; }
+     void forceName(string name) {_nodename = name;}
+     
+diff --git a/sim/queue.h b/sim/queue.h
+index 2706bef..7119c85 100755
+--- a/sim/queue.h
++++ b/sim/queue.h
+@@ -8,6 +8,7 @@
+ 
+ //#include <list>
+ //#include "circular_buffer.h"
++#include <math.h>
+ #include "config.h"
+ #include "eventlist.h"
+ #include "network.h"
+@@ -49,14 +50,29 @@ class BaseQueue  : public EventSource, public PacketSink, public Drawable {
+     virtual const string& nodename() { return _nodename; }
+     virtual mem_b queuesize() const = 0;
+     virtual mem_b maxsize() const = 0;
+-    
+-    inline simtime_picosec drainTime(Packet *pkt) { 
+-            return (simtime_picosec)(pkt->size() * _ps_per_byte); 
++
++    inline simtime_picosec drainTime(Packet *pkt) {
++            return (simtime_picosec)(pkt->size() * _ps_per_byte);
++    }
++
++    inline mem_b serviceCapacity(simtime_picosec t) {
++            return (mem_b)(timeAsSec(t) * (double)_bitrate);
+     }
+ 
+-    inline mem_b serviceCapacity(simtime_picosec t) { 
+-            return (mem_b)(timeAsSec(t) * (double)_bitrate); 
++    // AstraSim/OCS hook — dynamically change the queue service rate at run
++    // time.  When new_bitrate == 0 the queue still enqueues packets but
++    // beginService starves; callers should treat it as link-down.  Recomputes
++    // the cached picosec-per-byte.  Safe to call from inside a scheduled
++    // EventSource, the new rate takes effect for subsequent beginService calls.
++    virtual void setBitrate(linkspeed_bps new_bitrate) {
++            _bitrate = new_bitrate;
++            if (_bitrate > 0) {
++                _ps_per_byte = (simtime_picosec)((pow(10.0, 12.0) * 8) / _bitrate);
++            } else {
++                _ps_per_byte = 0;  // logical link-down — service paused
++            }
+     }
++    linkspeed_bps bitrate() const { return _bitrate; }
+ 
+     virtual void log_packet_send(simtime_picosec duration);
+     virtual uint16_t average_utilization();
+diff --git a/sim/queue_lossless_input.cpp b/sim/queue_lossless_input.cpp
+index df3e896..207e4b0 100755
+--- a/sim/queue_lossless_input.cpp
++++ b/sim/queue_lossless_input.cpp
+@@ -60,25 +60,36 @@ LosslessInputQueue::LosslessInputQueue(EventList& eventlist,BaseQueue* peer, Swi
+ 
+ 
+ void
+-LosslessInputQueue::receivePacket(Packet& pkt) 
++LosslessInputQueue::receivePacket(Packet& pkt)
+ {
+-    /* normal packet, enqueue it */
+-    _queuesize += pkt.size();
+-
+-    //send PAUSE notifications if that is the case!
+-    assert(_queuesize > 0);
+-    if ((uint64_t)_queuesize > _high_threshold && _state_recv!=PAUSED){
+-        _state_recv = PAUSED;
+-        sendPause(1000);
++    // AstraSim: when the very next hop in the route is the terminal sink
++    // (e.g. RoceSink/TcpSink), there is no downstream output queue to call
++    // completedService back on us, so tracking backlog here would leak and
++    // eventually stall the link via a stuck PAUSE.  Detect that case and
++    // just forward without enqueue tracking — PFC backpressure is pointless
++    // at the last hop because the sink is the consumer.
++    const bool next_is_terminal = pkt.route()
++        && (pkt.nexthop() + 1 == pkt.route()->size());
++
++    if (!next_is_terminal) {
++        /* normal packet, enqueue it */
++        _queuesize += pkt.size();
++
++        //send PAUSE notifications if that is the case!
++        assert(_queuesize > 0);
++        if ((uint64_t)_queuesize > _high_threshold && _state_recv!=PAUSED){
++            _state_recv = PAUSED;
++            sendPause(1000);
++        }
++
++        if (_queuesize > _maxsize){
++            static const bool _astrasim_verbose = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++            if (_astrasim_verbose) {
++                cout << " Queue " << _name << " LOSSLESS not working! I should have dropped this packet" << _queuesize / Packet::data_packet_size() << endl;
++            }
++        }
+     }
+ 
+-    //if (_state_recv==PAUSED)
+-    //cout << timeAsMs(eventlist().now()) << " queue " << _name << " switch (" << _switch->_name << ") "<< " recv when paused pkt " << pkt.type() << " sz " << _queuesize << endl;        
+-
+-    if (_queuesize > _maxsize){
+-        cout << " Queue " << _name << " LOSSLESS not working! I should have dropped this packet" << _queuesize / Packet::data_packet_size() << endl;
+-    }
+-    
+     //tell the output queue we're here!
+     if (pkt.nexthop() < pkt.route()->size()){
+         //this should not work...
+@@ -104,7 +115,12 @@ void LosslessInputQueue::completedService(Packet& pkt){
+ }
+ 
+ void LosslessInputQueue::sendPause(unsigned int wait){
+-    //cout << "Ingress link " << getRemoteEndpoint() << " PAUSE " << wait << endl;    
++    static const bool _astrasim_verbose = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++    if (_astrasim_verbose) {
++        cout << "[pfc] t=" << (eventlist().now() / 1e6) << "us "
++             << _nodename << " sendPause wait=" << wait
++             << " qsize=" << _queuesize << endl;
++    }
+     uint32_t switchID = 0;
+     if (_switch)
+         switchID = getSwitch()->getID();
+diff --git a/sim/queue_lossless_output.cpp b/sim/queue_lossless_output.cpp
+index 33a7b42..69fa5e2 100755
+--- a/sim/queue_lossless_output.cpp
++++ b/sim/queue_lossless_output.cpp
+@@ -30,11 +30,16 @@ LosslessOutputQueue::LosslessOutputQueue(linkspeed_bps bitrate, mem_b maxsize,
+ 
+ void
+ LosslessOutputQueue::receivePacket(Packet& pkt){
+-    if (pkt.type()==ETH_PAUSE)
++    if (pkt.type()==ETH_PAUSE) {
+         receivePacket(pkt,NULL);
+-    else {
+-        LosslessInputQueue* q = pkt.get_ingress_queue();
+-        pkt.clear_ingress_queue();
++    } else {
++        // AstraSim: 1-arg receivePacket is used for the FIRST hop too,
++        // where the sender (RoceSrc/TcpSrc) invokes sendOn() without
++        // routing through a LosslessInputQueue.  In that case the packet
++        // carries no ingress queue — pass NULL through to the 2-arg form
++        // (which has been patched to accept null).
++        LosslessInputQueue* q = pkt.has_ingress_queue() ? pkt.get_ingress_queue() : NULL;
++        if (q) pkt.clear_ingress_queue();
+         receivePacket(pkt,dynamic_cast<VirtualQueue*>(q));
+     }
+ }
+@@ -74,7 +79,11 @@ LosslessOutputQueue::receivePacket(Packet& pkt,VirtualQueue* prev)
+     /* normal packet, enqueue it */
+ 
+     //remember the virtual queue that has sent us this packet; will notify the vq once the packet has left our buffer.
+-    assert(prev!=NULL);
++    // AstraSim: the first hop from a sender (e.g. RoceSrc) enters the route
++    // via Packet::sendOn() which calls receivePacket(pkt) — 1-arg — without
++    // any ingress VirtualQueue.  Accept that case by pushing a nullptr into
++    // _vq; completeService skips the completedService notification when it
++    // pops a null.
+ 
+     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_ARRIVE);
+ 
+@@ -87,7 +96,13 @@ LosslessOutputQueue::receivePacket(Packet& pkt,VirtualQueue* prev)
+     _queuesize += pkt.size();
+ 
+     if (_queuesize > _maxsize){
+-        cout << " Queue " << _name << " LOSSLESS not working! I should have dropped this packet" << _queuesize / Packet::data_packet_size() << endl;
++        // AstraSim: only spam stdout when verbose.  The "should have dropped"
++        // indicates PFC thresholds are set too high for this workload —
++        // tune ASTRASIM_HTSIM_PFC_HIGH_KB / LOW_KB downwards.
++        static const bool _astrasim_verbose = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++        if (_astrasim_verbose) {
++            cout << " Queue " << _name << " LOSSLESS not working! I should have dropped this packet" << _queuesize / Packet::data_packet_size() << endl;
++        }
+     }
+ 
+     if (_logger) 
+@@ -124,7 +139,13 @@ void LosslessOutputQueue::completeService(){
+     if (pkt->type()==HPCC){
+         //HPPC INT information adding to packet
+         HPCCPacket* h = dynamic_cast<HPCCPacket*>(pkt);
+-        assert(h->_int_hop<5);
++        // AstraSim (P4): _int_info is now a std::vector — grow as needed
++        // so paths deeper than the upstream 3-tier FatTree assumption
++        // don't trip an assertion.  Packets pooled via PacketDB keep their
++        // vector between uses; resize() never shrinks.
++        if (h->_int_info.size() <= h->_int_hop) {
++            h->_int_info.resize(h->_int_hop + 1);
++        }
+ 
+         h->_int_info[h->_int_hop]._queuesize = _queuesize;
+         h->_int_info[h->_int_hop]._ts = eventlist().now();
+@@ -147,8 +168,10 @@ void LosslessOutputQueue::completeService(){
+ 
+     if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
+ 
+-    //tell the virtual input queue this packet is done!
+-    q->completedService(*pkt);
++    // AstraSim: on the first hop the upstream is a RoceSrc (not a
++    // VirtualQueue) and `q` is nullptr — skip the backpressure notify in
++    // that case.  Every other hop has a valid LosslessInputQueue peer.
++    if (q) q->completedService(*pkt);
+ 
+     //this is used for bandwidth utilization tracking. 
+     log_packet_send(drainTime(pkt));
+diff --git a/sim/roce.cpp b/sim/roce.cpp
+index ba82072..f718234 100755
+--- a/sim/roce.cpp
++++ b/sim/roce.cpp
+@@ -2,11 +2,13 @@
+ #include <math.h>
+ #include <iostream>
+ #include <algorithm>
++#include <cstdlib>
+ #include "roce.h"
+ #include "queue.h"
+ #include <stdio.h>
+ #include "switch.h"
+ #include "trigger.h"
++#include "ecn.h"   // AstraSim U3 — ECN_CE / ECN_ECHO
+ using namespace std;
+ 
+ ////////////////////////////////////////////////////////////////
+@@ -62,7 +64,10 @@ RoceSrc::RoceSrc(RoceLogger* logger, TrafficLogger* pktlogger, EventList &eventl
+     _node_num = _global_node_count++;
+     _nodename = "rocesrc " + to_string(_node_num);
+ 
+-    srand(time(NULL));
++    // AstraSim: upstream re-seeds rand() from wall-time on every RoceSrc
++    // construction.  With thousands of flows that causes subtle run-to-run
++    // non-determinism in RTO jitter and path selection.  HTSim frontend
++    // seeds rand()/random() once during session init instead.
+     _pathid = random()%256;
+ 
+     //cout << _nodename << " path id is " << _pathid << endl;
+@@ -75,6 +80,36 @@ RoceSrc::RoceSrc(RoceLogger* logger, TrafficLogger* pktlogger, EventList &eventl
+     _state_send = READY;
+     _time_last_sent = 0;
+     _packet_spacing = (simtime_picosec)((Packet::data_packet_size()+RocePacket::ACKSIZE) * (pow(10.0,12.0) * 8) / _bitrate);
++
++    // AstraSim U3 — DCQCN defaults (overridden by enable_dcqcn if called).
++    _cc_current_bps = _bitrate;
++    _cc_target_bps = _bitrate;
++    uint64_t ai = _bitrate / 100;
++    if (ai < 1000000ULL) ai = 1000000ULL;
++    if (ai > 50000000ULL) ai = 50000000ULL;
++    _cc_ai_bps = ai;
++    uint64_t minr = _bitrate / 1000;
++    if (minr < 100000000ULL) minr = 100000000ULL;
++    _cc_min_bps = minr;
++}
++
++void RoceSrc::enable_dcqcn(linkspeed_bps ai_bps,
++                           linkspeed_bps min_bps,
++                           uint64_t byte_threshold,
++                           double g) {
++    _cc_dcqcn = true;
++    if (ai_bps > 0) _cc_ai_bps = ai_bps;
++    if (min_bps > 0) _cc_min_bps = min_bps;
++    if (byte_threshold > 0) _cc_update_byte_threshold = byte_threshold;
++    if (g > 0.0) _cc_g = g;
++    _cc_current_bps = _bitrate;
++    _cc_target_bps = _bitrate;
++    _cc_alpha = 0.0;
++    _cc_bytes_since_update = 0;
++    _cc_marked_ack_ct = 0;
++    _cc_unmarked_ack_ct = 0;
++    _cc_incstage = 0;
++    _cc_unmarked_runs = 0;
+ }
+ 
+ /*mem_b RoceSrc::queuesize(){
+@@ -101,7 +136,9 @@ void RoceSrc::log_me() {
+ }
+ 
+ void RoceSrc::startflow(){
+-    cout << "startflow " << _flow._name << " at " << timeAsUs(eventlist().now()) << endl;
++    static const bool _astrasim_verbose_startflow = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++    if (_astrasim_verbose_startflow)
++        cout << "startflow " << _flow._name << " at " << timeAsUs(eventlist().now()) << endl;
+     _flow_started = true;
+     _highest_sent = 0;
+     _last_acked = 0;
+@@ -189,7 +226,61 @@ void RoceSrc::processAck(const RoceAck& ack) {
+     if (_rto < _min_rto)
+         _rto = _min_rto * ((drand() * 0.5) + 0.75);
+ 
+-    if (ackno > _last_acked) { // a brand new ack    
++    // AstraSim U3 — DCQCN AIMD CC update.  Gated on _cc_dcqcn (set by the
++    // DCQCN frontend via enable_dcqcn()).
++    if (_cc_dcqcn) {
++        uint64_t bytes_acked = 0;
++        if (ackno > _last_acked) bytes_acked = ackno - _last_acked;
++        _cc_bytes_since_update += bytes_acked;
++
++        bool marked = (ack.flags() & ECN_ECHO) != 0;
++        if (marked) _cc_marked_ack_ct++; else _cc_unmarked_ack_ct++;
++
++        _cc_alpha = (1.0 - _cc_g) * _cc_alpha + _cc_g * (marked ? 1.0 : 0.0);
++
++        bool changed = false;
++        if (marked) {
++            _cc_target_bps = _cc_current_bps;
++            double factor = 1.0 - _cc_alpha / 2.0;
++            if (factor < 0.0) factor = 0.0;
++            uint64_t new_bps = (uint64_t)(_cc_current_bps * factor);
++            if (new_bps < _cc_min_bps) new_bps = _cc_min_bps;
++            _cc_current_bps = new_bps;
++            _cc_incstage = 0;
++            _cc_unmarked_runs = 0;
++            changed = true;
++        }
++
++        if (_cc_bytes_since_update >= _cc_update_byte_threshold) {
++            bool had_marks = (_cc_marked_ack_ct > 0);
++            _cc_bytes_since_update = 0;
++            _cc_marked_ack_ct = 0;
++            _cc_unmarked_ack_ct = 0;
++            if (!had_marks) {
++                _cc_unmarked_runs++;
++                if (_cc_unmarked_runs >= 5) {
++                    uint64_t mid = (_cc_current_bps + _cc_target_bps) / 2;
++                    uint64_t new_bps = mid + _cc_ai_bps;
++                    if (new_bps > _bitrate) new_bps = _bitrate;
++                    _cc_current_bps = new_bps;
++                } else {
++                    uint64_t new_bps = _cc_current_bps + _cc_ai_bps;
++                    if (new_bps > _bitrate) new_bps = _bitrate;
++                    _cc_current_bps = new_bps;
++                }
++                _cc_incstage++;
++                changed = true;
++            }
++        }
++
++        if (changed && _cc_current_bps > 0) {
++            _packet_spacing = (simtime_picosec)(
++                (Packet::data_packet_size() + RocePacket::ACKSIZE) *
++                (pow(10.0, 12.0) * 8.0) / (double)_cc_current_bps);
++        }
++    }
++
++    if (ackno > _last_acked) { // a brand new ack
+         // we should probably cancel the rtx timer for any acked by
+         // the cumulative ack, but we'll get an ACK or NACK anyway in
+         // due course.
+@@ -200,7 +291,22 @@ void RoceSrc::processAck(const RoceAck& ack) {
+     if (_log_me)
+         cout << "Src " << get_id() << " ackno " << ackno << endl;
+     if (ackno >= _flow_size){
+-        cout << "Flow " << _name << " " << get_id() << " finished at " << timeAsUs(eventlist().now()) << " total bytes " << ackno << endl;
++        static const bool _astrasim_verbose_roce = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++        if (_astrasim_verbose_roce) {
++            cout << "Flow " << _name << " " << get_id() << " finished at " << timeAsUs(eventlist().now()) << " total bytes " << ackno << endl;
++        }
++        // AstraSim hook — fire send-finished callback exactly once.
++        if (astrasim_flow_finish_send_cb && !_astrasim_send_finished) {
++            _astrasim_send_finished = true;
++            int tag = _flow.flow_id();
++            int src_id = _debug_srcid;
++            int dst_id = _debug_dstid;
++            if (_astrasim_verbose_roce) {
++                std::cout << "Finish sending flow " << tag << " from " << src_id
++                          << " to " << dst_id << std::endl;
++            }
++            astrasim_flow_finish_send_cb(src_id, dst_id, _flow_size, tag);
++        }
+         _done = true;
+         if (_end_trigger) {
+             _end_trigger->activate();
+@@ -419,18 +525,33 @@ void RoceSink::receivePacket(Packet& pkt) {
+     } else if (seqno < _cumulative_ack+1) {
+         //must have been a bad retransmit
+     }
+-    send_ack(ts);
++    // AstraSim U3 — echo ECN_CE as ECN_ECHO on the ACK.
++    bool ecn_marked_here = (pkt.flags() & ECN_CE) != 0;
++    send_ack(ts, ecn_marked_here);
++    // AstraSim hook — fire receive-finished callback exactly once.
++    if (astrasim_flow_finish_recv_cb && _cumulative_ack + 1 >= _src->_flow_size
++        && !_astrasim_recv_finished) {
++        _astrasim_recv_finished = true;
++        int tag = _src->flow_id();
++        int src_id = _debug_srcid;
++        int dst_id = _debug_dstid;
++        astrasim_flow_finish_recv_cb(src_id, dst_id, _src->_flow_size, tag);
++    }
+     // have we seen everything yet?
+     pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
+     pkt.free();
+ }
+ 
+-void RoceSink::send_ack(simtime_picosec ts) {
++void RoceSink::send_ack(simtime_picosec ts, bool ecn_echo) {
+     RoceAck *ack = 0;
+     ack = RoceAck::newpkt(_src->_flow, *_route, _cumulative_ack,_srcaddr);
+     if (_log_me)
+         cout << "Sink " << get_id() << " sending ack " << _cumulative_ack << endl;
+     ack->set_pathid(0);
++    // AstraSim U3 — carry ECN_ECHO if the data packet arrived with ECN_CE.
++    if (ecn_echo) {
++        ack->set_flags(ack->flags() | ECN_ECHO);
++    }
+     ack->sendOn();
+ }
+ 
+diff --git a/sim/roce.h b/sim/roce.h
+index 4796dda..e50174c 100755
+--- a/sim/roce.h
++++ b/sim/roce.h
+@@ -120,6 +120,34 @@ public:
+ 
+     PacketFlow _flow;
+ 
++    // AstraSim hooks
++    void (*astrasim_flow_finish_send_cb)(int, int, int, int) = nullptr;
++    int _debug_srcid = -1;
++    int _debug_dstid = -1;
++    bool _astrasim_send_finished = false;
++
++    // AstraSim U3 — DCQCN AIMD congestion control.  Off by default; the
++    // DCQCN frontend flips _cc_dcqcn on at connect time via enable_dcqcn().
++    // Parameters follow DCQCN paper (SIGCOMM'15) in simplified form.
++    bool _cc_dcqcn = false;
++    double _cc_alpha = 0.0;
++    double _cc_g = 1.0 / 16.0;
++    linkspeed_bps _cc_current_bps = 0;
++    linkspeed_bps _cc_target_bps = 0;
++    linkspeed_bps _cc_ai_bps = 5000000ULL;
++    linkspeed_bps _cc_min_bps = 100000000ULL;
++    uint64_t _cc_bytes_since_update = 0;
++    uint64_t _cc_update_byte_threshold = 1 << 17;
++    uint32_t _cc_incstage = 0;
++    uint32_t _cc_unmarked_runs = 0;
++    uint32_t _cc_marked_ack_ct = 0;
++    uint32_t _cc_unmarked_ack_ct = 0;
++
++    void enable_dcqcn(linkspeed_bps ai_bps = 0,
++                      linkspeed_bps min_bps = 0,
++                      uint64_t byte_threshold = 0,
++                      double g = 0.0);
++
+ private:
+     // Housekeeping
+     RoceLogger* _logger;
+@@ -166,7 +194,13 @@ public:
+     bool _log_me;
+ 
+     uint32_t _srcaddr;
+-    
++
++    // AstraSim hooks
++    void (*astrasim_flow_finish_recv_cb)(int, int, int, int) = nullptr;
++    int _debug_srcid = -1;
++    int _debug_dstid = -1;
++    bool _astrasim_recv_finished = false;
++
+ private:
+  
+     // Connectivity
+@@ -186,7 +220,8 @@ private:
+     RocePacket::seq_t _highest_seqno;
+  
+     // Mechanism
+-    void send_ack(simtime_picosec ts);
++    // AstraSim U3 — optional ECN_ECHO bit when the data packet arrived marked.
++    void send_ack(simtime_picosec ts, bool ecn_echo = false);
+     void send_nack(simtime_picosec ts, RocePacket::seq_t ackno);
+ };
+ 
+diff --git a/sim/tcp.cpp b/sim/tcp.cpp
+index 45b54d3..a0a709e 100755
+--- a/sim/tcp.cpp
++++ b/sim/tcp.cpp
+@@ -184,7 +184,25 @@ TcpSrc::receivePacket(Packet& pkt)
+         _rto = timeFromSec(.25);
+ 
+     if (seqno >= _flow_size){
+-        cout << "Flow " << nodename() << " finished at " << timeAsMs(eventlist().now()) << endl;        
++        // §11.3 lever #3: gate verbose per-flow stdout behind ASTRASIM_HTSIM_VERBOSE env var.
++        static const bool _astrasim_verbose = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++        if (_astrasim_verbose) {
++            cout << "Flow " << nodename() << " finished at " << timeAsMs(eventlist().now()) << endl;
++        }
++        // AstraSim entry point
++        // Use IDs memorized at point of adding the flow, as well as unique src tag for the transition
++        // Gate on _astrasim_send_finished so the callback fires exactly once: duplicate / RTO ACKs
++        // after the flow is "done" otherwise re-trigger notify_sender_sending_finished which asserts.
++        if (astrasim_flow_finish_send_cb && !_astrasim_send_finished) {
++            _astrasim_send_finished = true;
++            int tag = _flow.flow_id();
++            int src_id = _debug_srcid;
++            int dst_id = _debug_dstid;
++            if (_astrasim_verbose) {
++                std::cout << "Finish sending flow " << tag << " from " << src_id << " to " << dst_id << std::endl;
++            }
 +            astrasim_flow_finish_send_cb(src_id, dst_id, _flow_size, tag);
 +        }
      }
    
      if (seqno > _last_acked) { // a brand new ack
-@@ -681,6 +690,17 @@ TcpSink::receivePacket(Packet& pkt) {
+@@ -681,6 +699,23 @@ TcpSink::receivePacket(Packet& pkt) {
              }
          }
      }
 +
 +    // AstraSim entry point
 +    // Use IDs memorized at point of adding the flow, as well as unique src tag for the transition
-+    if (_cumulative_ack >= _src->_flow_size && astrasim_flow_finish_recv_cb) {
++    // Gate on _astrasim_recv_finished so the callback fires exactly once per flow.
++    if (_cumulative_ack >= _src->_flow_size && astrasim_flow_finish_recv_cb && !_astrasim_recv_finished) {
++        _astrasim_recv_finished = true;
 +        int tag = _src->getFlowId();
 +        int src_id = _debug_srcid;
 +        int dst_id = _debug_dstid;
-+        std::cout << "Finish receiving flow " << tag << " from " << src_id << " to " << dst_id << std::endl;
++        // §11.3 lever #3: gate behind ASTRASIM_HTSIM_VERBOSE.
++        static const bool _astrasim_verbose_sink = (std::getenv("ASTRASIM_HTSIM_VERBOSE") != nullptr);
++        if (_astrasim_verbose_sink) {
++            std::cout << "Finish receiving flow " << tag << " from " << src_id << " to " << dst_id << std::endl;
++        }
 +        astrasim_flow_finish_recv_cb(src_id, dst_id, _src->_flow_size, tag);
 +    }
 +
@@ -37,7 +781,7 @@ index 45b54d3..664561b 100755
  }
  
 diff --git a/sim/tcp.h b/sim/tcp.h
-index 127bbdb..3c97422 100755
+index 127bbdb..a61e7de 100755
 --- a/sim/tcp.h
 +++ b/sim/tcp.h
 @@ -44,10 +44,9 @@ public:
@@ -52,7 +796,7 @@ index 127bbdb..3c97422 100755
      void set_ssthresh(uint64_t s){_ssthresh = s;}
      void set_cwnd(uint64_t s){_cwnd = s;}
      void set_dst(int d){_dst=d;}
-@@ -137,6 +136,12 @@ private:
+@@ -137,6 +136,13 @@ private:
      //void clearWhen(TcpAck::seq_t from, TcpAck::seq_t to);
      //void showWhen (int from, int to);
      string _nodename;
@@ -62,10 +806,11 @@ index 127bbdb..3c97422 100755
 +        void (*astrasim_flow_finish_send_cb)(int, int, int, int) = nullptr;
 +        int _debug_srcid = -1;
 +        int _debug_dstid = -1;
++        bool _astrasim_send_finished = false;  // guards multi-fire of flow-finish callback
  };
  
  class TcpSink : public PacketSink, public DataReceiver {
-@@ -180,6 +185,12 @@ private:
+@@ -180,6 +186,13 @@ private:
      void send_ack(simtime_picosec ts,bool marked);
  
      string _nodename;
@@ -75,6 +820,7 @@ index 127bbdb..3c97422 100755
 +    void (*astrasim_flow_finish_recv_cb)(int, int, int, int) = nullptr;
 +    int _debug_srcid = -1;
 +    int _debug_dstid = -1;
++    bool _astrasim_recv_finished = false;  // guards multi-fire of flow-finish callback
  };
  
  class TcpRtxTimerScanner : public EventSource {

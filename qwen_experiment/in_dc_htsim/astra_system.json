@@ -1,0 +1,39 @@
+{
+    "scheduling-policy": "LIFO",
+    "endpoint-delay": 10,
+    "active-chunks-per-dimension": 8,
+    "preferred-dataset-splits": 4,
+    "all-reduce-implementation": [
+        "ring"
+    ],
+    "all-gather-implementation": [
+        "ring"
+    ],
+    "reduce-scatter-implementation": [
+        "ring"
+    ],
+    "all-to-all-implementation": [
+        "direct"
+    ],
+    "collective-optimization": "localBWAware",
+    "local-mem-bw": 1560,
+    "boost-mode": 0,
+    "roofline-enabled": 1,
+    "peak-perf": 312,
+    "peak-perf-achievable-fraction": 1.0,
+    "peak-perf-per-op-category": {
+        "GEMM": 312,
+        "ELEMWISE": 90,
+        "SOFTMAX": 60,
+        "REDUCE": 40,
+        "OTHER": 312
+    },
+    "track-local-mem": 0,
+    "vram-capacity-gb": 80,
+    "hardware-resource-capacity": {
+        "cpu": 1,
+        "gpu-comp": 1,
+        "gpu-comm": 1,
+        "gpu-recv": 64
+    }
+}

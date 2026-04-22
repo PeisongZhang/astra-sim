@@ -35,3 +35,9 @@ runs
 
 local_mem_trace*.json
 *.log.*
+
+# htsim runtime artefacts
+idmap.txt
+logout.dat
+htsim_experiment/*_sharded/
+**/shard_*_exp/

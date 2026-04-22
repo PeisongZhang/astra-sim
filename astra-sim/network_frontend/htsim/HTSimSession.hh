@@ -14,7 +14,10 @@ namespace HTSim {
 
 enum class HTSimProto {
     None,
-    Tcp
+    Tcp,
+    RoCE,   // Phase 1 minimal (§11.8); full CC tuning in Phase 3.1a.
+    DCQCN,  // Phase 3.1b — placeholder.
+    HPCC    // Phase 3.1c — placeholder.
 };
 
 std::stringstream& operator>> (std::stringstream& is, HTSimProto& proto);
@@ -92,6 +95,10 @@ typedef std::pair<int, std::pair<int, int>> MsgEventKey;
 
 struct tm_info {
     int nodes;
+    // Path to ASTRA-sim Custom topology.txt. When non-null, the proto layer
+    // will build htsim GenericCustomTopology from it instead of the default
+    // FatTreeTopology. Populated by HTSimMain from NetworkParser.
+    const char* custom_topology_path = nullptr;
     // We don't need connections/triggers information,
     // they're generated on the fly.
     // Can add link failures or astra-sim specific config here.

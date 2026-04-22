@@ -11,6 +11,8 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_unaware/Helper.h>
 #include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
+#include <cstdint>
+#include <fstream>
 
 using namespace HTSim;
 
@@ -39,17 +41,42 @@ int main(int argc, char* argv[]) {
 
     AstraSim::LoggerFactory::init(logging_configuration);
 
-    // Generate topology
+    // Parse the network YAML.
+    // Note: htsim builds its own topology graph (FatTree today, GenericCustomTopology
+    // in Phase 1), so we deliberately do NOT call construct_topology() — which would
+    // reject Custom topology. We only need npus_count / dims for the ASTRA-sim Sys ctor.
     const auto network_parser = NetworkParser(network_configuration);
-    const auto topology = construct_topology(network_parser);
+    const auto dims_count = network_parser.get_dims_count();
+    auto npus_count_per_dim = network_parser.get_npus_counts_per_dim();
+    int npus_count = 1;
+    for (auto n : npus_count_per_dim) {
+        npus_count *= n;
+    }
+    // Prefer the external topology file when Custom is requested.
+    const auto htsim_topology_file = network_parser.get_topology_file();
 
-    // Get topology information
-    const auto npus_count = topology->get_npus_count();
-    const auto npus_count_per_dim = topology->get_npus_count_per_dim();
-    const auto dims_count = topology->get_dims_count();
+    // If the YAML left npus_count blank (common for Custom-only YAMLs like
+    // megatron_gpt_experiment/gpt_76b_1024/analytical_network.yml), derive the
+    // host count from topology.txt.  Format: line 1 = "<num_nodes> <num_switches> <num_links>".
+    if (npus_count == 0 && !htsim_topology_file.empty()) {
+        std::ifstream tf(htsim_topology_file);
+        if (tf) {
+            uint32_t num_nodes = 0, num_switches = 0, num_links = 0;
+            tf >> num_nodes >> num_switches >> num_links;
+            if (num_nodes > 0 && num_nodes >= num_switches) {
+                npus_count = static_cast<int>(num_nodes - num_switches);
+                npus_count_per_dim = {npus_count};
+            }
+        }
+    }
+    if (npus_count <= 0) {
+        std::cerr << "[Error] (htsim/main) Could not determine npus_count "
+                  << "(set npus_count in YAML or provide a Custom topology_file)."
+                  << std::endl;
+        return -1;
+    }
 
-    // Set up Network API
-    HTSimNetworkApi::set_topology(topology);
+    HTSimNetworkApi::set_dims_and_bandwidth(dims_count, network_parser.get_bandwidths_per_dim());
     auto completion_tracker = std::make_shared<CompletionTracker>(npus_count);
     HTSimNetworkApi::set_completion_tracker(completion_tracker);
 
@@ -95,6 +122,16 @@ int main(int argc, char* argv[]) {
 
     // Initialize HTSim session
     HTSimNetworkApi::htsim_info.nodes = npus_count;
+    // Plumb the Custom topology path (if any) through to HTSimProtoTcp so
+    // GenericCustomTopology can load it.  NetworkParser already resolves the
+    // path relative to the YAML directory.
+    static std::string htsim_custom_topo_storage;
+    if (!htsim_topology_file.empty()) {
+        htsim_custom_topo_storage = htsim_topology_file;
+        HTSimNetworkApi::htsim_info.custom_topology_path = htsim_custom_topo_storage.c_str();
+    } else {
+        HTSimNetworkApi::htsim_info.custom_topology_path = nullptr;
+    }
     // Choose protocol
     auto& ht = HTSimSession::init(&HTSimNetworkApi::htsim_info, htsim_argc, htsim_argv, proto);
 

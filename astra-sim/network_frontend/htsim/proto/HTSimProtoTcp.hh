@@ -15,6 +15,7 @@
 #include "mtcp.h"
 #include "loggers.h"
 #include "fat_tree_topology.h"
+#include "GenericCustomTopology.hh"
 
 namespace HTSim {
 
@@ -60,30 +61,18 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
 
         char* topo_file = NULL;
 
-        #ifdef FAT_TREE
+        // Default htsim backend topology. The frontend picks one of:
+        //   - FatTreeTopology (native, used when no Custom topology.txt is supplied), or
+        //   - GenericCustomTopology (§11.4: reads ASTRA-sim's Custom topology.txt).
+        // Both derive from htsim's ::Topology so the schedule_htsim_event path
+        // stays identical (get_paths(src, dst)).
         std::unique_ptr<FatTreeTopology> top;
-        #endif
+        std::unique_ptr<HTSim::GenericCustomTopology> top_generic;
+        ::Topology* active_topology = nullptr;
 
-        #ifdef OV_FAT_TREE
-        std::unique_ptr<OversubscribedFatTreeTopology> top;
-        #endif
-
-        #ifdef MH_FAT_TREE
-        std::unique_ptr<MultihomedFatTreeTopology> top;
-        #endif
-
-        #ifdef STAR
-        std::unique_ptr<StarTopology> top;
-        #endif
-
-        #ifdef BCUBE
-        std::unique_ptr<BCubeTopology> top;
-        #endif
-
-        #ifdef VL2
-        std::unique_ptr<VL2Topology> top;
-        #endif
-
+    public:
+        HTSim::GenericCustomTopology* generic_topology() { return top_generic.get(); }
+        FatTreeTopology* fat_tree_topology() { return top.get(); }
 };
 
 } // namespace HTSim

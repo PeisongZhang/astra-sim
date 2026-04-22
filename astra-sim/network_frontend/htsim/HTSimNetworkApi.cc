@@ -49,6 +49,13 @@ void HTSimNetworkApi::set_topology(std::shared_ptr<Topology> topology_ptr) noexc
     HTSimNetworkApi::bandwidth_per_dim = HTSimNetworkApi::topology->get_bandwidth_per_dim();
 }
 
+void HTSimNetworkApi::set_dims_and_bandwidth(
+    int dims,
+    const std::vector<NetworkAnalytical::Bandwidth>& bw_per_dim) noexcept {
+    HTSimNetworkApi::dims_count = dims;
+    HTSimNetworkApi::bandwidth_per_dim = bw_per_dim;
+}
+
 void HTSimNetworkApi::set_completion_tracker(std::shared_ptr<CompletionTracker> completion_tracker_ptr) noexcept {
     assert(completion_tracker_ptr != nullptr);
     HTSimNetworkApi::completion_tracker  = std::move(completion_tracker_ptr);

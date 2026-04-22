@@ -1,0 +1,10 @@
+# Custom topology for analytical congestion-aware backend.
+# Reads the actual network graph from topology.txt.
+# bandwidth/latency here are representative values for ASTRA-sim scheduling;
+# actual per-link values come from topology_file.
+
+topology: [ Custom ]
+npus_count: [ 16 ]
+bandwidth: [50.0 ]    # 200 Gbps expressed as binary GB/s
+latency: [ 500.0 ]      # representative latency in ns
+topology_file: "topology.txt"

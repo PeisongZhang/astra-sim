@@ -39,7 +39,11 @@ file(GLOB srcs_htsim_proto
         ${CMAKE_CURRENT_SOURCE_DIR}/proto/*.cc
 )
 
-add_executable(AstraSim_HTSim ${srcs_htsim} ${srcs_common} ${srcs_htsim_extern} ${srcs_htsim_proto})
+file(GLOB srcs_htsim_topology
+        ${CMAKE_CURRENT_SOURCE_DIR}/topology/*.cc
+)
+
+add_executable(AstraSim_HTSim ${srcs_htsim} ${srcs_common} ${srcs_htsim_extern} ${srcs_htsim_proto} ${srcs_htsim_topology})
 target_sources(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/HTSimMain.cc)
 
 # Link libraries
@@ -54,6 +58,7 @@ add_dependencies(AstraSim_HTSim htsim)
 # Include directories
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/proto)
+target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/topology)
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../analytical/include/)
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../extern/)
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../extern/helper)

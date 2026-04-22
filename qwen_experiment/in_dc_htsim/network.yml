@@ -1,0 +1,6 @@
+# Custom topology for analytical congestion-aware backend.
+# Reads the actual network graph from topology.txt.
+# Per-link bandwidth/latency come from topology_file.
+
+topology: [ Custom ]
+topology_file: "topology.txt"
