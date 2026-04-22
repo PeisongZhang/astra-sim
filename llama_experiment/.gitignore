@@ -10,3 +10,5 @@ logical_topo.json
 workload/
 workload
 log/
+*.png
+*trace.txt
