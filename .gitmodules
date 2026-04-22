@@ -19,4 +19,4 @@
 	url = https://github.com/PeisongZhang/astra-network-ns3.git
 [submodule "extern/network_backend/csg-htsim"]
 	path = extern/network_backend/csg-htsim
-	url = https://github.com/Broadcom/csg-htsim.git
+	url = https://github.com/PeisongZhang/csg-htsim.git

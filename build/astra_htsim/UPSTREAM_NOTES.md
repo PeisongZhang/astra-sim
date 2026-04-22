@@ -1,6 +1,9 @@
 # csg-htsim upstream sync notes
 
-Current pin: `841d9e7be46bb968eece766aa4b6c044c7799f67` (anchor: "Revised connection_matrix.h/cpp"), bumped on 2026-04-22. Previous pin: `67cbbbb1cccdbddc400803414127d044ecd55290`.
+Current origin: **`https://github.com/PeisongZhang/csg-htsim`** (fork of `Broadcom/csg-htsim`). The fork's `master` carries the ASTRA-sim integration hooks as a single commit on top of the Broadcom pin, so newcomers get a working tree out-of-the-box and do **not** need `htsim_astrasim.patch` to reapply on clone.
+
+Current pin: `664bad0` (anchor: "ASTRA-sim integration hooks …") on top of Broadcom `841d9e7`.
+Previous pins: `841d9e7` (Broadcom master, patched at build-time) → `67cbbbb`.
 
 Upstream `origin/master` is ahead by 5 commits. Evaluation below (oldest first):
 
@@ -27,6 +30,12 @@ As of 2026-04-22 evening (§19 session — P4, P5, U3 landed), `build/astra_htsi
 - `sim/tcp.cpp`, `sim/tcp.h` — flow-finish hooks
 
 Patch is fully idempotent against upstream `841d9e7`. Any submodule bump must re-verify by running `build/astra_htsim/build.sh` and confirming the three integration tests pass (`test_hpcc.sh`, `test_dcqcn.sh`, `test_ocs_mutator.sh`).
+
+### After the 2026-04-23 fork migration
+
+With the pin now at `664bad0` on `PeisongZhang/csg-htsim master`, the patch is already materialised in the submodule's working tree. `build.sh` still runs `patch --forward` as a safety net — on the new pin it returns exit 1 ("all hunks already applied") which the script logs as **"HTSim patch skipped"** and continues. This is the expected path for a fresh clone.
+
+If the pin is ever rolled back to vanilla Broadcom (`841d9e7` or earlier), the same patch file will apply cleanly, preserving the old build flow.
 
 ## Bump results (2026-04-22)
 
