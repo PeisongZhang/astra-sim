@@ -397,7 +397,33 @@ bash htsim_experiment/tools/run_pp_sharded.sh \
 
 设计细节 / 开放问题见 `sharded_parallel_design.md`。
 
-### 8.4 长跑硬建议
+### 8.4 边界延迟自动校准（D2，2026-04-23）
+
+默认 25 µs 是保守值。给定一个 workload 的 analytical 参考 cycle，可以反推每个 shard 应该用多大边界延迟才能把 ratio 推到目标值附近：
+
+```bash
+# 1. 先按默认 25us 跑一遍（产出 run.csv + shard_stats.json）
+bash htsim_experiment/tools/run_pp_sharded.sh \
+    --base-exp <exp> --workload-dir <wl> --pp 4 --dp 8 --tp 16 \
+    --out-dir my_sharded
+
+# 2. 把 analytical 日志 + run.csv 喂回 splitter，看 per-shard 建议
+python3 htsim_experiment/tools/shard_workload_pp.py \
+    --calibrate-from-analytical analytical/run_analytical.log \
+    --htsim-run-csv my_sharded/run.csv \
+    --stats-in my_sharded/shard_stats.json
+```
+
+线性外推模型：
+
+```
+htsim_cycle    = static_cycles + N_boundary * boundary_latency_ns
+suggested_ns   = max(0, (analytical_cycles - static_cycles) / N_boundary)
+```
+
+输出包含 per-shard 建议、long-pole shard ID、以及"按 long-pole 收敛"的全局建议值。换算成 µs 再用 `--boundary-latency-us=<long_pole_suggestion>` 重跑 splitter 即可。
+
+### 8.5 长跑硬建议
 
 ```bash
 export ASTRASIM_LOG_LEVEL=info      # 否则 debug 日志能打挂 DES

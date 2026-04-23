@@ -55,6 +55,23 @@ add_custom_target(htsim COMMAND make WORKING_DIRECTORY ${HTSIM_DIR})
 target_link_libraries(AstraSim_HTSim LINK_PRIVATE ${HTSIM_DIR}/libhtsim.a)
 add_dependencies(AstraSim_HTSim htsim)
 
+# §10/S2: Link tcmalloc_minimal if available. libtcmalloc-minimal4 ships only
+# .so.4 (no -dev package, no .so symlink) so we link by absolute path.
+# Toggle off with -DASTRASIM_HTSIM_TCMALLOC=OFF.
+option(ASTRASIM_HTSIM_TCMALLOC "Link tcmalloc_minimal if found" ON)
+if (ASTRASIM_HTSIM_TCMALLOC)
+    find_file(TCMALLOC_LIB
+              NAMES libtcmalloc_minimal.so libtcmalloc_minimal.so.4
+              PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /usr/local/lib
+              NO_DEFAULT_PATH)
+    if (TCMALLOC_LIB)
+        message(STATUS "Linking tcmalloc_minimal: ${TCMALLOC_LIB}")
+        target_link_libraries(AstraSim_HTSim LINK_PRIVATE ${TCMALLOC_LIB})
+    else()
+        message(STATUS "tcmalloc_minimal not found (set -DASTRASIM_HTSIM_TCMALLOC=OFF to silence)")
+    endif()
+endif()
+
 # Include directories
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/proto)

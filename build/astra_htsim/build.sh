@@ -49,6 +49,38 @@ function patch_htsim() {
     echo "HTSim patch failed"
     exit 1
   fi
+
+  # §23 perf optimization: EventList binary-heap rewrite.  Applied on top of
+  # the base integration patch so a clean `git checkout -- sim/` inside the
+  # csg-htsim submodule followed by `build.sh` restores the optimization.
+  if [[ -f "${SCRIPT_DIR:?}"/htsim_eventlist.patch ]]; then
+    patch -p1 -d "${SCRIPT_DIR:?}"/../../extern/network_backend/csg-htsim \
+      --forward --reject-file=- -i "${SCRIPT_DIR:?}"/htsim_eventlist.patch && true
+    ret=$?
+    if [[ $ret -eq 0 ]]; then
+      echo "HTSim eventlist perf patch applied"
+    elif [[ $ret -eq 1 ]]; then
+      echo "HTSim eventlist perf patch skipped (already applied)"
+    else
+      echo "HTSim eventlist perf patch failed"
+      exit 1
+    fi
+  fi
+
+  # §23 perf optimization: chakra DependancyResolver compact adjacency.
+  if [[ -f "${SCRIPT_DIR:?}"/chakra_perf.patch ]]; then
+    patch -p1 -d "${SCRIPT_DIR:?}"/../../extern/graph_frontend/chakra \
+      --forward --reject-file=- -i "${SCRIPT_DIR:?}"/chakra_perf.patch && true
+    ret=$?
+    if [[ $ret -eq 0 ]]; then
+      echo "Chakra perf patch applied"
+    elif [[ $ret -eq 1 ]]; then
+      echo "Chakra perf patch skipped (already applied)"
+    else
+      echo "Chakra perf patch failed"
+      exit 1
+    fi
+  fi
 }
 
 function compile_astrasim_htsim() {

@@ -169,10 +169,11 @@ def _rewrite_node_for_shard(node, shard_rank_set: set[int],
 def _process_rank(args):
     """Worker: translate one rank's .et. Runs in a multiprocessing child."""
     (src_path, dst_path, shard_ranks_list, rank_renumber_items,
-     boundary_num_ops) = args
+     boundary_num_ops, shard_id) = args
     shard_ranks = set(shard_ranks_list)
     rank_renumber = dict(rank_renumber_items)
-    stats = {"intra_rewrite": 0, "cross_to_comp": 0, "nodes": 0}
+    stats = {"intra_rewrite": 0, "cross_to_comp": 0, "nodes": 0,
+             "shard": shard_id}
     fin = openFileRd(src_path)
     fout = openFileWt(dst_path)
     gm = et_def_pb2.GlobalMetadata()
@@ -229,6 +230,7 @@ def shard_workload(
           f"(num_ops={boundary_num_ops}), workers={workers}")
 
     shard_dirs: list[Path] = []
+    per_shard_boundary = [0] * pp  # cross_to_comp per shard
     # Build all rank tasks across all shards so we keep CPUs saturated.
     tasks = []
     for shard in range(pp):
@@ -243,18 +245,20 @@ def shard_workload(
             src = workload_dir / f"workload.{orig_rank}.et"
             dst = sdir / f"workload.{orig_rank - shard_start}.et"
             tasks.append((str(src), str(dst), shard_ranks, rank_renumber,
-                          boundary_num_ops))
+                          boundary_num_ops, shard))
 
     totals = {"intra_rewrite": 0, "cross_to_comp": 0, "nodes": 0}
     if workers <= 1:
         for t in tasks:
             s = _process_rank(t)
+            per_shard_boundary[s["shard"]] += s["cross_to_comp"]
             for k in totals:
                 totals[k] += s[k]
     else:
         with mp.Pool(workers) as pool:
             for i, s in enumerate(pool.imap_unordered(_process_rank, tasks,
                                                       chunksize=4)):
+                per_shard_boundary[s["shard"]] += s["cross_to_comp"]
                 for k in totals:
                     totals[k] += s[k]
                 if (i + 1) % 64 == 0:
@@ -276,14 +280,131 @@ def shard_workload(
               f"{len(shard_cg)}/{len(comm_groups)} comm_groups kept")
     print(f"[splitter] totals: intra_rewrite={totals['intra_rewrite']}, "
           f"cross_to_comp={totals['cross_to_comp']}, nodes={totals['nodes']}")
+
+    # D2: emit splitter stats for later boundary-latency calibration
+    # (calibrate_boundary below consumes this + analytical log + htsim run.csv).
+    stats_out = {
+        "pp": pp,
+        "dp": dp,
+        "tp": tp,
+        "stage_size": stage_size,
+        "total_npus": total_npus,
+        "boundary_latency_us": boundary_latency_us,
+        "boundary_num_ops": boundary_num_ops,
+        "peak_tflops": peak_tflops,
+        "per_shard_boundary_count": per_shard_boundary,
+        "totals": totals,
+    }
+    with (out_dir / "shard_stats.json").open("w") as f:
+        json.dump(stats_out, f, indent=2)
     return shard_dirs
+
+
+# ----------------------------------------------------------------------------
+# D2: boundary-latency calibration from analytical reference run.
+# ----------------------------------------------------------------------------
+#
+# Model:
+#   htsim_cycle_ns      = static_cycle_ns + N_boundary × boundary_latency_ns
+#   analytical_cycle_ns = static_cycle_ns + real_cross_shard_comm_ns
+#
+# Given a previous sharded run's (htsim_cycles, boundary_latency_us) we solve:
+#   static = htsim_cycle - N_boundary × current_boundary_ns
+#   suggested_boundary_ns = (analytical_cycle - static) / N_boundary
+#
+# All 'cycles' reported by astra-sim are nanoseconds (1ns tick period), so
+# the ns-vs-us conversion is just /1000.
+
+_FINISHED_RE_TEXT = r"sys\[([0-9]+)\] finished, ([0-9]+) cycles"
+
+
+def _parse_analytical_max_cycle(log_path: Path) -> int:
+    import re
+    pat = re.compile(_FINISHED_RE_TEXT)
+    max_c = 0
+    with log_path.open() as f:
+        for line in f:
+            m = pat.search(line)
+            if m:
+                c = int(m.group(2))
+                if c > max_c:
+                    max_c = c
+    if max_c == 0:
+        raise RuntimeError(f"no 'sys[N] finished, C cycles' lines in {log_path}")
+    return max_c
+
+
+def _parse_htsim_run_csv(csv_path: Path) -> dict:
+    """Return {shard_name -> {max_cycle, finished, wall_sec, rc}} from run.csv."""
+    import csv
+    out = {}
+    with csv_path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            out[row["shard"]] = {
+                "finished": int(row["finished"]),
+                "max_cycle": int(row["max_cycle"]),
+                "wall_sec": int(row["wall_sec"]),
+                "rc": int(row["rc"]),
+            }
+    return out
+
+
+def calibrate_boundary(analytical_log: Path, htsim_run_csv: Path,
+                        stats_in: Path) -> dict:
+    analytical_ns = _parse_analytical_max_cycle(analytical_log)
+    htsim = _parse_htsim_run_csv(htsim_run_csv)
+    with stats_in.open() as f:
+        stats = json.load(f)
+    pp = stats["pp"]
+    cur_us = stats["boundary_latency_us"]
+    cur_ns = cur_us * 1000.0
+    per_shard_boundary = stats["per_shard_boundary_count"]
+
+    shard_max_cycles = []
+    suggested_per_shard = []
+    for i in range(pp):
+        name = f"shard_{i}_exp"
+        if name not in htsim:
+            raise RuntimeError(f"{name} missing from htsim run.csv")
+        mc = htsim[name]["max_cycle"]
+        nb = per_shard_boundary[i]
+        shard_max_cycles.append(mc)
+        if nb <= 0:
+            suggested_per_shard.append(None)
+            continue
+        static_ns = mc - nb * cur_ns
+        if static_ns < 0:
+            static_ns = 0  # defensive; N_boundary over-estimate
+        sug_ns = max(0.0, (analytical_ns - static_ns) / nb)
+        suggested_per_shard.append(sug_ns / 1000.0)
+
+    # Global suggestion: target the shard whose static cycles are largest
+    # so the pipeline's long-pole stage matches analytical wall.
+    htsim_global_max = max(shard_max_cycles)
+    # Pick the long-pole shard for the global knob.
+    lp = shard_max_cycles.index(htsim_global_max)
+    global_sug_us = suggested_per_shard[lp] if suggested_per_shard[lp] is not None else cur_us
+    return {
+        "analytical_max_cycle_ns": analytical_ns,
+        "htsim_max_cycle_ns": htsim_global_max,
+        "ratio_current": htsim_global_max / analytical_ns if analytical_ns else 0.0,
+        "current_boundary_latency_us": cur_us,
+        "suggested_boundary_latency_us_global": global_sug_us,
+        "suggested_boundary_latency_us_per_shard": suggested_per_shard,
+        "long_pole_shard": lp,
+        "per_shard_htsim_max_cycle_ns": shard_max_cycles,
+        "per_shard_boundary_count": per_shard_boundary,
+    }
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workload-dir", required=True, type=Path)
-    ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--pp", type=int, required=True)
+    ap.add_argument("--workload-dir", type=Path,
+                    help="unsharded STG workload dir (not used in --calibrate mode)")
+    ap.add_argument("--out-dir", type=Path,
+                    help="shard output dir (also where calibrate reads stats.json from)")
+    ap.add_argument("--pp", type=int)
     ap.add_argument("--dp", type=int)
     ap.add_argument("--tp", type=int)
     ap.add_argument("--boundary-latency-us", type=float,
@@ -291,7 +412,45 @@ def main():
     ap.add_argument("--peak-tflops", type=float, default=312.0)
     ap.add_argument("--workers", type=int, default=0,
                     help="parallel workers (default = max(1, cpu_count-1))")
+    ap.add_argument("--calibrate-from-analytical", type=Path, metavar="LOG",
+                    help="Calibration mode: analyze a previous sharded run "
+                         "and print the suggested --boundary-latency-us. "
+                         "Needs --htsim-run-csv and --stats-in.")
+    ap.add_argument("--htsim-run-csv", type=Path,
+                    help="run.csv from a previous run_pp_sharded.sh invocation")
+    ap.add_argument("--stats-in", type=Path,
+                    help="shard_stats.json from the prior splitter run "
+                         "(defaults to <out-dir>/shard_stats.json)")
     args = ap.parse_args()
+
+    if args.calibrate_from_analytical:
+        # Calibration mode: no sharding, just report suggested boundary_us.
+        if not args.htsim_run_csv:
+            ap.error("--calibrate-from-analytical requires --htsim-run-csv")
+        stats_in = args.stats_in
+        if stats_in is None:
+            if args.out_dir is None:
+                ap.error("--stats-in or --out-dir required in calibrate mode")
+            stats_in = args.out_dir / "shard_stats.json"
+        if not stats_in.exists():
+            ap.error(f"stats file not found: {stats_in}")
+        result = calibrate_boundary(
+            args.calibrate_from_analytical, args.htsim_run_csv, stats_in
+        )
+        print(json.dumps(result, indent=2))
+        ratio = result["ratio_current"]
+        sug = result["suggested_boundary_latency_us_global"]
+        cur = result["current_boundary_latency_us"]
+        print(f"\n[calibrate] current ratio = {ratio:.4f}")
+        print(f"[calibrate] current --boundary-latency-us = {cur}")
+        print(f"[calibrate] suggested --boundary-latency-us = {sug:.3f}")
+        if 0.9 <= ratio <= 1.5:
+            print(f"[calibrate] ratio already within [0.9, 1.5] window; no re-shard needed")
+        return
+
+    # Shard mode: all sharding args are required.
+    if not args.workload_dir or not args.out_dir or args.pp is None:
+        ap.error("--workload-dir, --out-dir, --pp are required in shard mode")
     shard_workload(
         workload_dir=args.workload_dir,
         out_dir=args.out_dir,

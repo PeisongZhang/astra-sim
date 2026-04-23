@@ -24,7 +24,12 @@ project(AstraSim)
 include(FetchContent)
 
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/extern/helper/fmt")
-option(SPDLOG_FMT_EXTERNAL ON) # override default option for spdlog.
+# Note: §10/S1 attempted SPDLOG_FMT_EXTERNAL=ON to unify fmt vendoring (the
+# previous option() call was a no-op), but extern/helper/fmt and
+# extern/helper/spdlog/include/spdlog/fmt/bundled are point-version mismatched
+# (base.h 2932 vs 3077 lines) — bundled exports basic_format_string, external
+# does not, so spdlog source fails to compile against the external copy.
+# Enabling LTO with both copies present remains blocked on this.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/extern/helper/spdlog")
 FetchContent_Declare(
     yaml-cpp

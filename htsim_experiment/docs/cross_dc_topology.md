@@ -1,6 +1,7 @@
-# Phase 1.5 — Native cross-DC topology support (htsim)
+# Native cross-DC topology support (htsim)
 
-Date: 2026-04-22.
+Originally landed: Phase 1.5 (2026-04-22). Status (2026-04-23): shipped
+and stable; see "What's deferred" at the bottom for the residual TODO list.
 
 ## Extended topology.txt format
 
@@ -13,7 +14,7 @@ Date: 2026-04-22.
 #REGIONS <num_regions>
 <node_id> <region_id> <node_id> <region_id> ...
 
-<src> <dst> <bw> <lat> <err> [link_type]
+<src> <dst> <bw> <lat> <err> [link_type] [@<rev_bw>/<rev_lat>]
 ```
 
 Rules:
@@ -21,17 +22,32 @@ Rules:
 - `#REGIONS` line is **optional** and fully backward-compatible. If missing, every node gets `region_id = 0` (single-DC).
 - The mapping line immediately after `#REGIONS` is free-form `node_id region_id node_id region_id …` pairs (whitespace-separated). Nodes not listed default to region 0.
 - Link lines take an optional 6th column `link_type`, one of `intra`, `inter_leaf`, `inter_spine`, `wan`. Default `intra` if omitted.
-- The link-type tag is stored on each `GenLinkDesc` and exposed for reporting / future PFC-per-class work.
+- An optional `@<rev_bw>/<rev_lat>` token (after `link_type`) overrides the reverse-direction bandwidth / latency — see "Asymmetric WAN links" below.
+- The link-type tag is stored on each `GenLinkDesc` and used for gateway-queue selection (see "Consumers" below).
 
 ## Consumers
 
-- **Routing**: BFS routing is region-agnostic today. Phase 3 will add region-aware policies (e.g. prefer `inter_leaf` over `wan` when a choice exists).
-- **OCS mutator**: `schedule_link_change(at_ps, src, dst, bw, up)` already exposes per-link mutation. This becomes the entry-point for cross-DC optical circuit reconfiguration in the MoE-OCS project.
-- **Gateway queues (stub)**: the plan (§11.5) calls for `GatewayQueue` with independent buffer / PFC tunables on inter-region links. Currently all Pipes/Queues use the same defaults; add a per-`link_type` override in Phase 3 when we expose PFC-per-class (§11.2 P3.1d).
+- **Routing**: Dijkstra (default; edge weight `1 / bw_Gbps`) is region-agnostic. `ASTRASIM_HTSIM_ROUTE=bfs` falls back to hop-count. Region-aware policies (e.g. prefer `inter_leaf` over `wan` when a choice exists) are still TODO — see "What's deferred".
+- **OCS mutator**: `schedule_link_change(at_ps, src, dst, bw, up)` exposes per-link mutation; driven from the shell via `ASTRASIM_HTSIM_OCS_SCHEDULE`. Pair with `ASTRASIM_HTSIM_OCS_REROUTE=1` to clear the path cache on reroute. This is the entry-point for cross-DC optical circuit reconfiguration in the MoE-OCS project.
+- **Gateway queues**: ✅ shipped. Inter-region links (i.e. links whose endpoints are in different regions per `#REGIONS`, *or* whose `link_type` is `wan` / `inter_spine`) get a deeper per-port queue, sized by `ASTRASIM_HTSIM_GATEWAY_QUEUE_BYTES` (default 4 MB = 4× `QUEUE_BYTES`). PFC thresholds are still shared with intra-region queues; per-class PFC tunables are deferred (U5).
 
 ## Legacy inter-DC experiments
 
-All 9 inter-DC experiments in `llama_experiment/inter_dc*` and `llama3_70b_experiment/inter_dc_*` use plain topology.txt without the `#REGIONS` block. They pick up region 0 by default and still route correctly (latency/bandwidth differences stay in the per-link data, not in the routing table). This is by design — no edits to the existing topology files are required for Phase 2 migration.
+All `llama_experiment/inter_dc*_htsim/` and `llama3_70b_experiment/inter_dc_*_htsim/` directories use plain `topology.txt` without the `#REGIONS` block. They pick up region 0 by default and still route correctly (latency/bandwidth differences stay in the per-link data, not in the routing table). This is by design — no edits to the existing topology files were required for the Phase 2 migration, and acceptance ratios (0.985 – 1.008 vs analytical/ns-3, see `htsim_usage_manual.md` §1.2) remain inside §11.6.
+
+## Asymmetric WAN links
+
+A 6th column (or 7th, after `link_type`) of the form `@<rev_bw>/<rev_lat>`
+sets a different bandwidth / latency on the reverse (dst → src) direction
+of the same link. Forward stays as written.
+
+```
+38 39 800Gbps 0.3ms 0 wan @200Gbps/0.3ms
+```
+
+The reverse `Pipe` and `Queue` are constructed independently (see
+`GenericCustomTopology::add_link`). Useful for modelling
+asymmetric WAN tiers where uplink and downlink rates differ.
 
 ## Example (two-DC skeleton)
 
@@ -46,15 +62,15 @@ All 9 inter-DC experiments in `llama_experiment/inter_dc*` and `llama3_70b_exper
 32 0 400Gbps 0.0005us 0 intra
 32 1 400Gbps 0.0005us 0 intra
 ...
-# spines + gateway
-38 39 800Gbps 0.3ms 0 wan
+# spines + gateway (asymmetric: 800G fwd / 200G rev)
+38 39 800Gbps 0.3ms 0 wan @200Gbps/0.3ms
 ```
 
-The WAN link type lets future reporting clearly separate cross-DC bytes from intra-DC bytes.
+The WAN link type makes inter-DC bytes separable in any future
+per-class report; today it controls gateway queue sizing only.
 
-## What's deferred to Phase 3
+## What's deferred
 
-- Per-class PFC (`#REGIONS` + link_type × priority queues)
-- `GatewayQueue` with independent buffer pools
-- Region-aware multi-path routing (e.g. prefer shortest-within-region)
-- Asymmetric BW/latency per direction (`@<reverse_bw>/<reverse_lat>` suffix — parser hook exists in `parse_link_line`, storage not yet wired for separate forward/reverse rates).
+- Per-class PFC (multiple priority queues + per-class PAUSE thresholds). Single-priority PFC ships today via `QUEUE_TYPE=lossless`. Tracked as U5.
+- Region-aware multi-path routing (e.g. prefer shortest-within-region, or split traffic across multiple gateway links proportionally).
+- Per-`link_type` PFC threshold overrides (today all `lossless` ports share `ASTRASIM_HTSIM_PFC_HIGH_KB`/`LOW_KB`; gateway links only get a deeper queue, not different thresholds).
