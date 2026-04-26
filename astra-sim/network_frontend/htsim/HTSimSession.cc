@@ -3,6 +3,7 @@
 #include "HTSimProtoTcp.hh"
 #include "HTSimProtoRoCE.hh"
 #include "HTSimProtoHPCC.hh"
+#include "FlowLogger.hh"
 
 #include <cstdlib>
 #include <iostream>
@@ -81,6 +82,12 @@ void HTSimSession::send_flow(FlowInfo flow,
     std::pair<MsgEventKey, int> send_event_key = std::make_pair(
         std::make_pair(flow.tag, std::make_pair(send_event.src_id, send_event.dst_id)), flow_id);
     HTSimSession::send_waiting[send_event_key] = send_event;
+
+    // Offline flow-event log (ASTRASIM_HTSIM_FLOW_LOG): capture simulator-time
+    // t_start so the finish hook can emit (src, dst, size, t_start, t_end).
+    FlowLogger::instance().record_start(
+        static_cast<uint32_t>(flow_id),
+        static_cast<uint64_t>(get_time_ns()));
 
     // Create a queue pair and schedule within the HTSim simulator.
     impl->schedule_htsim_event(flow, flow_id);
@@ -178,6 +185,13 @@ void HTSimSession::notify_sender_sending_finished(int src_id,
 // instance created at send_flow.
 void HTSimSession::flow_finish_send(int src_id, int dst_id, int msg_size, int flow_id) {
 
+    // Offline flow-event log: record end-of-flow.  `flow_finish_send` is
+    // always called exactly once per flow across tcp / roce / hpcc.
+    FlowLogger::instance().record_finish(
+        static_cast<uint32_t>(flow_id), src_id, dst_id,
+        static_cast<uint32_t>(msg_size),
+        static_cast<uint64_t>(instance().get_time_ns()));
+
     int tag = flow_id_to_tag[flow_id];
     // Let sender knows that the flow has finished.
     notify_sender_sending_finished(src_id, dst_id, msg_size, tag, flow_id);
@@ -202,6 +216,7 @@ void HTSimSession::flow_finish_recv(int src_id, int dst_id, int msg_size, int fl
 }
 
 void HTSimSession::finish() {
+    FlowLogger::instance().close();
     impl->finish();
 }
 
