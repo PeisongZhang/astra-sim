@@ -2,7 +2,7 @@
 
 - A100 FP16 peak used in sim: **312.0 TFLOP/s/GPU**
 - Cycle convention: 1 cycle = 1.0 ns (standard ASTRA-sim)
-- Wall time = slowest GPU's `Wall time` (time-ordered last `sys[*] finished`)
+- Wall time = slowest GPU's `Wall time` 
 - Executed FLOP:
   - AR=on  → paper eqn (3) (4× forward)
   - AR=off → 3/4 × paper eqn (3) (only fwd + 2× bwd; no recompute)
