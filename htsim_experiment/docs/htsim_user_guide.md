@@ -11,8 +11,10 @@
 Full procedure in `htsim_usage_manual.md` §3 / §4. Minimal form:
 
 ```bash
+## build
 cd /home/ps/sow/part2/astra-sim
 bash build/astra_htsim/build.sh
+## run
 build/astra_htsim/build/bin/AstraSim_HTSim \
   --workload-configuration=<dir>/workload \
   --comm-group-configuration=<dir>/workload.json \

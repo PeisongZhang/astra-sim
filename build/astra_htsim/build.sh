@@ -67,20 +67,9 @@ function patch_htsim() {
     fi
   fi
 
-  # §23 perf optimization: chakra DependancyResolver compact adjacency.
-  if [[ -f "${SCRIPT_DIR:?}"/chakra_perf.patch ]]; then
-    patch -p1 -d "${SCRIPT_DIR:?}"/../../extern/graph_frontend/chakra \
-      --forward --reject-file=- -i "${SCRIPT_DIR:?}"/chakra_perf.patch && true
-    ret=$?
-    if [[ $ret -eq 0 ]]; then
-      echo "Chakra perf patch applied"
-    elif [[ $ret -eq 1 ]]; then
-      echo "Chakra perf patch skipped (already applied)"
-    else
-      echo "Chakra perf patch failed"
-      exit 1
-    fi
-  fi
+  # Chakra perf changes (feeder_v3 u32 NodeId + compact adjacency) are now
+  # baked into the fork (PeisongZhang/chakra @ astrasim-perf, pinned to 6edbe37);
+  # no patch step needed.
 }
 
 function compile_astrasim_htsim() {

@@ -12,14 +12,15 @@
 
 | 类别 | 已交付 |
 |---|---|
-| 后端前端代码 | `astra-sim/network_frontend/htsim/` 下 TCP / RoCE / DCQCN / HPCC 四种协议 + `GenericCustomTopology` 通用拓扑 + 跨 DC / WAN 不对称 / GatewayQueue 扩展 |
-| 上游适配 | submodule pin 在 `841d9e7`；`build/astra_htsim/htsim_astrasim.patch`（826 行 / 14 文件）加 flow-finish 回调 / 确定性 seed / OCS setter / 向量化 INT / AIMD CC |
-| 构建系统 | `build/astra_htsim/build.sh`（幂等 patch + cmake + make，< 2 min 全量） |
+| 后端前端代码 | `astra-sim/network_frontend/htsim/` 下 TCP / RoCE（可叠加 DCQCN 拥塞控制）/ HPCC 三类传输 + `GenericCustomTopology` 通用拓扑 + 跨 DC / WAN 不对称 / GatewayQueue 扩展 + `FlowLogger` 离线流量日志 |
+| 上游适配 | htsim submodule 源切到 `PeisongZhang/csg-htsim` fork（pin `b88267e`，含 ASTRA-sim 集成 hook + eventlist 二叉堆改写）；chakra submodule 源切到 `PeisongZhang/chakra` fork（pin `6edbe37`，含 `feeder_v3` u32 NodeId + 紧凑邻接表）。所有改动已合入 fork master，新 clone 直接 build 即用；`build/astra_htsim/htsim_astrasim.patch`（826 行 / 14 文件）+ `htsim_eventlist.patch`（500 行）保留为回滚 Broadcom 主线时的安全网（`build.sh` 幂等 apply） |
+| 构建系统 | `build/astra_htsim/build.sh`（幂等 patch + cmake + make，< 2 min 全量；自动链接 `tcmalloc_minimal`，`-DASTRASIM_HTSIM_TCMALLOC=OFF` 关闭） |
 | 实验目录 | 18 个 `*_htsim/`，与原 analytical / ns-3 实验并排放（见 §3.3） |
 | 批量 runner | `htsim_experiment/run_all_htsim.sh`（产出 3-backend CSV 对比） |
-| 分片并行 | `htsim_experiment/tools/shard_workload_pp.py` + `run_pp_sharded.sh` + 若干一键验收脚本 |
-| 回归与 CI | `utils/htsim_smoke.sh` + `htsim_experiment/tools/test_*.sh` 共 10+ 个集成测试 |
-| 文档 | `htsim_experiment/docs/` 下 5 份文档（基线、用户手册、跨 DC、分片设计、本说明书） + 顶层 `htsim_migration_plan.md`（计划 + 全部 session 交班记录） |
+| 分片并行 | `htsim_experiment/tools/shard_workload_pp.py` + `run_pp_sharded.sh` + 8 个一键验收脚本（含 B1536、noar、trafficmatrix 变体） |
+| 流量分析 | `astra-sim/network_frontend/htsim/FlowLogger.{cc,hh}` + `htsim_experiment/traffic_analysis/{extract_traffic_matrix.py,visualize_traffic.py}` |
+| 回归与 CI | `utils/htsim_smoke.sh` + `htsim_experiment/tools/test_*.sh` 共 11 个集成测试 |
+| 文档 | `htsim_experiment/docs/` 下 5 份文档（基线、用户手册、跨 DC、分片设计、本说明书） + 顶层 `htsim_migration_plan.md`（权威快照 §22；session 流水账已剔除） |
 
 ### 1.2 §11.6 验收现状
 
@@ -39,8 +40,8 @@
 
 **阻塞点（与本工程正确性无关）**：
 
-- `gpt_39b @ BATCH=1536`（arxiv 原始口径 24 个 microbatch）需要 ≥ 64 GiB RAM，当前 30 GiB 机器 OOM。
-- `gpt_76b_1024` / `llama3_70b` 1024 NPU 实验同样受 RAM 限制（U12）。
+- `gpt_39b @ BATCH=1536`（arxiv 原始口径 24 个 microbatch）：§23 内存优化（chakra `feeder_v3` u32 NodeId + eventlist 二叉堆 + tcmalloc）将每 shard RSS 从 ~10 GB 降到 ~1 GB，已能在 30 GiB 机器上双 shard 并跑；wall 仍受单线程 DES 主导（双 shard ~12 h 量级）。一键脚本：`run_gpt_39b_512_L48B1536_sharded.sh`。
+- `gpt_76b_1024` / `llama3_70b` 1024 NPU 实验仍受 RAM 限制（U12）。
 - `qwen/in_dc (128)` 在原始 Clos 拓扑下事件吞吐仍有压力，可按 §3.5 的"flat-star 降压"思路重跑。
 
 ### 1.3 仍未完成的事项
@@ -74,13 +75,17 @@ source /home/ps/sow/part2/astra-sim/.venv/bin/activate
 
 ### 2.3 submodule pin
 
+submodule 源现指向 `https://github.com/PeisongZhang/csg-htsim`，fork 的 master 已把 ASTRA-sim 集成 hook（`664bad0`）和 eventlist 二叉堆改写（`b88267e`）合在树上，新 clone 不再依赖 `htsim_astrasim.patch` / `htsim_eventlist.patch` 重注入。
+
 ```bash
 cd /home/ps/sow/part2/astra-sim/extern/network_backend/csg-htsim
-git rev-parse HEAD | head -c 7     # 预期 841d9e7
-git status --short | wc -l         # 预期 14（build.sh 幂等 apply 的 patch 改动）
+git rev-parse HEAD | head -c 7     # 预期 b88267e
+git remote -v | head -1            # 预期 origin → PeisongZhang/csg-htsim
 ```
 
-> **切勿**裸升级 submodule。14 个文件的 patch 与 pin 强绑定，升级须按 `build/astra_htsim/UPSTREAM_NOTES.md` 的流程走。
+`build.sh` 仍会跑 `patch --forward` 作为安全网：在已合入的树上 patch 返回 1（"already applied"），脚本日志为 `HTSim patch skipped` / `HTSim eventlist perf patch skipped (already applied)`，这是新 clone 的预期路径。
+
+> **切勿**裸升级 submodule。如需回滚到 Broadcom 主线（`841d9e7`），保留的两个 htsim patch 文件可干净 forward apply。chakra submodule 同步 pin 到 `6edbe37`（`PeisongZhang/chakra @ astrasim-perf`，`feeder_v3` u32 NodeId + 紧凑邻接表已直接合入 fork，无需 patch）。完整流程见 `build/astra_htsim/UPSTREAM_NOTES.md`。
 
 ---
 
@@ -90,18 +95,23 @@ git status --short | wc -l         # 预期 14（build.sh 幂等 apply 的 patch
 
 ```bash
 cd /home/ps/sow/part2/astra-sim
-bash build/astra_htsim/build.sh          # 幂等 apply patch → cmake → make（< 2 min）
+bash build/astra_htsim/build.sh          # 幂等 apply 两个 htsim patch → cmake → make（< 2 min）
 bash build/astra_htsim/build.sh -d       # debug build（-O0 -g）
 bash build/astra_htsim/build.sh -l       # clean：删 build/ + 生成的 et_def.pb.*
 ```
 
-产物：`build/astra_htsim/build/bin/AstraSim_HTSim`。
+`build.sh` 顺次幂等 apply（chakra 改动已直接合入 `PeisongZhang/chakra` fork，无 patch 步骤）：
 
-若 patch re-apply 失败（"previously applied / hunk failed"），先恢复 submodule 再重跑：
+1. `htsim_astrasim.patch` —— 已合入 fork master，新 clone 上 patch 直接返回 "skipped"；回滚到 Broadcom 主线时这份 patch 仍能 forward apply 复原集成。
+2. `htsim_eventlist.patch` —— 同上（fork master 也已合并 `b88267e`）；保留作为回滚后的 §23 perf 重注入入口。
+
+产物：`build/astra_htsim/build/bin/AstraSim_HTSim`。CMake 检测到 `libtcmalloc_minimal.so*` 时自动链接（日志 `Linking tcmalloc_minimal: ...`）；想关掉用 `cmake .. -DASTRASIM_HTSIM_TCMALLOC=OFF`。
+
+若任一 patch reject（"hunk failed"，多见于手改了 submodule 工作树后），先恢复再重跑：
 
 ```bash
-cd extern/network_backend/csg-htsim
-git checkout -- sim/
+cd extern/network_backend/csg-htsim && git checkout -- sim/ && rm -f sim/*.orig
+cd ../../graph_frontend/chakra && git checkout -- src/feeder_v3/
 cd ../../..
 bash build/astra_htsim/build.sh
 ```
@@ -112,6 +122,15 @@ bash build/astra_htsim/build.sh
 bash utils/htsim_smoke.sh                              # 16 NPU ring all-gather，<1s，16/16 PASS
 bash htsim_experiment/tools/test_generic_topology.sh   # Generic topology + Custom topology.txt，<3s
 bash htsim_experiment/tools/test_pp_sharded_runner.sh  # 8 NPU PP=2 分片并行骨架，<10s
+```
+
+完整 11 个集成测试一次跑全（~2 min）：
+
+```bash
+for t in htsim_experiment/tools/test_*.sh; do bash "$t" || break; done
+# 覆盖：generic_topology / dcqcn / dcqcn_aimd / hpcc / gateway_queue /
+#       wan_asym / ocs_mutator / ocs_reroute / sharded_runner /
+#       pp_sharded_runner / ns3_config_parse
 ```
 
 ### 3.3 §11.6 完整回归（~20 分钟）
@@ -237,12 +256,15 @@ grep -E "sys\[[0-9]+\] finished" llama_experiment/in_dc_htsim/run_htsim.log | ta
 
 ### 6.1 协议选项（`--htsim-proto=`）
 
-| 值 | 说明 | 推荐用途 |
-|---|---|---|
-| `tcp` | htsim `TcpSrc` / `TcpSink`，Reno + slow start。Multipath 已 bypass（固定 1 subflow）。 | 对照组 / 历史兼容 |
-| `roce` | Minimal RoCE v2（默认）。auto NIC pacing、固定 seed、flow-finish 回调。 | **§11.6 默认** |
-| `dcqcn` | RoCE + CompositeQueue ECN 标记 + AIMD CWND（真 DCQCN，SIGCOMM'15 简化版）。自动把 queue type 切到 `composite`。 | 拥塞控制研究 |
-| `hpcc` | 原生 HPCC（INT 由 `LosslessOutputQueue` 注入）；强制 `queue_type=lossless`。 | 论文复现 / HPCC 对比 |
+> **协议层次说明**：`--htsim-proto` 选的是"传输层 + 拥塞控制"组合，不是四个同层协议。
+> 传输层只有两类：**TCP**（自带 Reno/slow-start CC）和 **RoCE v2**（RDMA over UDP，本身不含 CC，只靠 PFC 实现无损）。**DCQCN** 与 **HPCC** 都是叠加在 RoCE 之上的拥塞控制算法（前者基于 ECN+CNP+AIMD，后者基于 INT 遥测+窗口适配），层次类似 TCP 与 Reno/CUBIC/BBR 的关系。htsim 工程上为 HPCC 单开了 `HPCCSrc/Sink` 类，但本质仍是 RoCE 传输 + HPCC CC。本旗标把常用组合压成一个开关。
+
+| 值 | 传输层 | 拥塞控制 | 说明 | 推荐用途 |
+|---|---|---|---|---|
+| `tcp` | TCP（htsim `TcpSrc` / `TcpSink`） | Reno + slow start | Multipath 已 bypass（固定 1 subflow）。 | 对照组 / 历史兼容 |
+| `roce` | RoCE v2（`RoceSrc` / `RoceSink`） | 无（仅 PFC 无损 + auto NIC pacing） | 默认。固定 seed、flow-finish 回调。 | **§11.6 默认** |
+| `dcqcn` | RoCE v2（复用 `RoceSrc`） | DCQCN（CompositeQueue ECN 标记 + CNP + AIMD 速率，SIGCOMM'15 简化版） | 自动把 queue type 切到 `composite`。 | 拥塞控制研究 |
+| `hpcc` | RoCE v2（`HPCCSrc` / `HPCCSink` 单独类） | HPCC（INT 由 `LosslessOutputQueue` 注入 + 窗口适配，SIGCOMM'19） | 强制 `queue_type=lossless`。 | 论文复现 / HPCC 对比 |
 
 DCQCN 可细调：`ASTRASIM_HTSIM_DCQCN_{KMIN_KB,KMAX_KB,AI_MBPS,MIN_MBPS,BYTES,G_RECIP}`。
 
@@ -331,6 +353,9 @@ export ASTRASIM_HTSIM_OCS_REROUTE=1
 | `ASTRASIM_HTSIM_LOGGERS` | unset | 打开 htsim sampling loggers（`logout.dat`） |
 | **`ASTRASIM_LOG_LEVEL`** | `debug` | **长跑必设 `info` 或 `off`**，否则 debug 日志压死 DES |
 | **`ASTRASIM_FLUSH_ON`** | `err` | **长跑必设 `info`**，否则 spdlog buffer 到退出才落盘（像挂了） |
+| `ASTRASIM_HTSIM_FLOW_LOG` | unset | 二进制流事件日志输出路径；置空则关闭。详见 §9.5 / `FlowLogger.hh` |
+| `ASTRASIM_HTSIM_FLOW_LOG_MAX_GB` | `300` | 单个 flow log 文件上限（GB），超过后停止追加并打印一次告警 |
+| `ASTRASIM_HTSIM_EVENT_RESERVE` | `65536` | eventlist 二叉堆的预 reserve 容量。大 workload 推荐显式给到峰值事件数（gpt_39b L48 B256 ≈ 5e7、B1536 ≈ 5e8），消除 vector 翻倍复制造成的 RSS 尖峰 |
 
 ---
 
@@ -348,18 +373,28 @@ export ASTRASIM_HTSIM_OCS_REROUTE=1
 
 每个 `run_gpt_39b_*_sharded.sh` 都烧死了一组 (LAYER, DP, TP, PP, BATCH, MICROBATCH) 并选好了拓扑和协议：
 
+| 脚本 | 规模 / Layout | 用途 | wall |
+|---|---|---|---|
+| `run_gpt_39b_32_sharded.sh` | L4 / 32 NPU | 10 秒分片骨架 smoke | < 10 s |
+| `run_gpt_39b_512_l4_sharded.sh` / `_star_sharded.sh` / `_tiny_sharded.sh` | L4 / 512 NPU 多种拓扑 | scale ladder 对照 | 1–3 min |
+| `run_gpt_39b_512_b4_sharded.sh` | L48 BATCH=4 / 512 NPU | 短 BATCH 校准 | ~5 min |
+| `run_gpt_39b_512_L48_sharded.sh` | L48 BATCH=256 ar=1 / 512 NPU | **产线金标准**（~55 min，ratio ≈ 0.946） | ~55 min |
+| `run_gpt_39b_512_L48_noar_sharded.sh` | L48 BATCH=256 ar=0 | 关闭 inter-shard AR 的对照 | ~55 min |
+| `run_gpt_39b_512_L48B1536_sharded.sh` | L48 BATCH=1536 / 512 NPU | arxiv 原始口径 24-microbatch（§23 后内存可在 30 GiB 跑通，wall ~12 h） | ~12 h |
+| `run_gpt_39b_512_L48_trafficmatrix.sh` | L48 BATCH=256 + flow log | 金标准跑同时落盘 flow log，供 §9.5 流量分析 | ~55 min |
+
 ```bash
 # 10 秒 smoke
 bash htsim_experiment/tools/run_gpt_39b_32_sharded.sh
-
-# 产线 L48 @ 512 NPU 金标准（~55 分钟）
+# 产线 L48 @ 512 NPU 金标准
 bash htsim_experiment/tools/run_gpt_39b_512_L48_sharded.sh
-
-# Scale ladder
-bash htsim_experiment/tools/run_gpt_39b_512_star_sharded.sh   # L4 @ 512
+# B1536 完整 microbatch 口径（§23 后解锁）
+bash htsim_experiment/tools/run_gpt_39b_512_L48B1536_sharded.sh
+# 金标准 + flow log 一并产出
+bash htsim_experiment/tools/run_gpt_39b_512_L48_trafficmatrix.sh
 ```
 
-产物写到 `htsim_experiment/<name>_sharded/`：
+产物写到 `htsim_experiment/<name>_sharded/`（trafficmatrix 变体走 `<name>_trafficmatrix/`）：
 
 ```
 <name>_sharded/
@@ -369,12 +404,15 @@ bash htsim_experiment/tools/run_gpt_39b_512_star_sharded.sh   # L4 @ 512
 │   ├── topology.txt
 │   ├── run_htsim.sh
 │   ├── run_htsim.log
-│   └── runner.log
+│   ├── runner.log
+│   └── flow_log.bin      # 仅 trafficmatrix 变体，开启 ASTRASIM_HTSIM_FLOW_LOG 时
 ├── shard_1_exp/
-└── run.csv               # shard_id,max_cycle,finished,wall_sec,rc
+├── workload_shards/      # shard_workload_pp.py 切出的 per-shard ET 树
+├── shard_stats.json      # per-shard COMP/COMM/边界统计，D2 校准的输入
+└── run.csv               # 列：shard,finished,max_cycle,wall_sec,rc[,flow_log_bytes]
 ```
 
-> `*_sharded/` 目录整个都是运行产物（已在 `.gitignore`），可随时删除重跑。
+> `*_sharded/` 与 `*_trafficmatrix/` 目录整个都是运行产物（已在 `.gitignore`），可随时删除重跑。
 
 ### 8.3 通用接口（任意 workload）
 
@@ -384,16 +422,18 @@ bash htsim_experiment/tools/run_pp_sharded.sh \
   --workload-dir /path/to/stg_output_dir \
   --pp 2 --dp 32 --tp 8 \
   --out-dir htsim_experiment/my_sharded \
-  --queue lossless --proto roce --endtime 300
+  --queue lossless --proto roce --endtime 300 \
+  --boundary-us 25 --parallel 0   # parallel=0 => 全部 shard 同时跑
 ```
 
 内部流程：
 
-1. `shard_workload_pp.py` 读原始 `workload.*.et`，按 `rank // (DP*TP)` 分 PP 片；跨片 `COMM_SEND/RECV` 改写为等价 `COMP_NODE`（保持 DAG 依赖，等价延迟默认 25 µs × peak TFLOPS）。
+1. `shard_workload_pp.py` 读原始 `workload.*.et`，按 `rank // (DP*TP)` 分 PP 片；跨片 `COMM_SEND/RECV` 改写为等价 `COMP_NODE`（保持 DAG 依赖，等价延迟由 `--boundary-us` 控制，默认 25 µs；脚本同时落 `shard_stats.json`，记录每片 COMP/COMM 节点数和跨片边数，供 §8.4 D2 反推用）。
 2. `extract_sub_topology.py`（可选，Clos 分片时用）从原 topology.txt 抽 N 个 host 的子拓扑。
 3. `make_pp_shard_exp.sh` 为每个 shard 生成独立 `astra_system.json` / `analytical_network.yml` / `topology.txt` / `run_htsim.sh`。关键点：`npus_count` 显式写成 shard 大小；`PROJECT_DIR` 烧死绝对路径。
-4. 并行起 N 个 `AstraSim_HTSim`，汇总 `run.csv`。
-5. 合并 `combined_max_cycle = max(shard_cycle)`（纯 PP pipeline 等价模型；忽略 pipeline warm-up bubble，< 5% 误差在 §11.6 容忍内）。
+4. 并行起 N 个 `AstraSim_HTSim`（`--parallel` 控制并发上限，默认 = `pp`），子进程默认导出 `ASTRASIM_LOG_LEVEL=info` 防止 debug 日志压垮 DES。
+5. 汇总 `run.csv`（列：`shard,finished,max_cycle,wall_sec,rc`）。
+6. 合并 `combined_max_cycle = max(shard_cycle)`（纯 PP pipeline 等价模型；忽略 pipeline warm-up bubble，< 5% 误差在 §11.6 容忍内）。
 
 设计细节 / 开放问题见 `sharded_parallel_design.md`。
 
@@ -431,6 +471,9 @@ export ASTRASIM_FLUSH_ON=info       # 否则看不到进度，像挂了
 export ASTRASIM_HTSIM_QUEUE_TYPE=lossless
 export ASTRASIM_HTSIM_QUEUE_BYTES=16777216  # 16 MB，多并发 incast
 export ASTRASIM_HTSIM_PFC_HIGH_KB=50
+# 大 workload 直接喂峰值事件数，避免 vector 翻倍复制造成的 RSS 尖峰
+export ASTRASIM_HTSIM_EVENT_RESERVE=50000000   # gpt_39b L48 B256 ≈ 1.2 GB
+# export ASTRASIM_HTSIM_EVENT_RESERVE=500000000 # gpt_39b L48 B1536 ≈ 12 GB
 ```
 
 ---
@@ -490,6 +533,52 @@ bash llama_experiment/inter_dc_mesh_htsim/run_htsim.sh
 
 编辑 `htsim_experiment/run_all_htsim.sh` 的 `EXPS=(...)` 数组加一行路径，下次 `bash htsim_experiment/run_all_htsim.sh` 即可带出并写入 `run_all_report.csv`。
 
+### 9.4 离线流量事件日志（FlowLogger）
+
+htsim 后端在 `send_flow` / `flow_finish_send` 处插桩，在每条 flow 完成时落一条 32 字节定长记录到二进制日志。开关用环境变量：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ASTRASIM_HTSIM_FLOW_LOG` | unset | 输出文件路径；置空时不写日志 |
+| `ASTRASIM_HTSIM_FLOW_LOG_MAX_GB` | `300` | 单文件上限（GB），超过后停止写入并打印一次告警 |
+
+文件格式（小端，权威定义在 `astra-sim/network_frontend/htsim/FlowLogger.hh`）：
+
+```
+header (16 B): magic "HTSMFLOG" | uint32 version=1 | uint32 rec_sz=32
+record (32 B): u64 t_start_ns | u64 t_end_ns | u32 flow_id | u32 src | u32 dst | u32 size_bytes
+```
+
+最简单的开法是直接在 sharded runner 外面 export 一遍，每个 shard 的 `run_htsim.sh` 会继承：
+
+```bash
+export ASTRASIM_HTSIM_FLOW_LOG=/tmp/flow_log.bin   # 单进程跑
+# 多 shard 跑要给每个 shard 独立路径，否则会互相覆盖
+```
+
+`run_gpt_39b_512_L48_trafficmatrix.sh` 已经在脚本内为两个 shard 各自指定 `flow_log.bin` 并把容量按 150 GB / shard 兜底；它是 §11.6 金标准 + flow log 的一键入口。
+
+### 9.5 流量矩阵分析工具链
+
+`htsim_experiment/traffic_analysis/` 下两个脚本消费 §9.4 的二进制日志，全部走仓库 venv（`astra-sim/.venv`）：
+
+```bash
+# 1) 多 shard 日志合成 [T, N, N] 流量矩阵 .npz + 摘要 JSON
+.venv/bin/python htsim_experiment/traffic_analysis/extract_traffic_matrix.py \
+    --log shard_0_exp/flow_log.bin --shard-id 0 --stage-size 256 \
+    --log shard_1_exp/flow_log.bin --shard-id 1 --stage-size 256 \
+    --bin-us 100 \
+    --output traffic_matrix.npz
+
+# 2) 渲染 timeline / heatmap / dp-block heatmap / src-time / top-pairs
+.venv/bin/python htsim_experiment/traffic_analysis/visualize_traffic.py \
+    --matrix traffic_matrix.npz --out-dir traffic_plots/
+```
+
+`extract_traffic_matrix.py` 把每条 flow 的 bytes 按重叠时长比例分摊到 bin，零时长 flow 整段沉积在结束 bin。Output `.npz` 字段：`matrix [T,N,N]` / `bin_ns` / `t0_ns` / `num_nodes` / `shard_ids` / `global_ids`。
+
+实测：gpt_39b 512-NPU L48 BATCH=256 双 shard 各产 8.51 M 条记录、`pending_unmatched=0`、`dropped_cap=0`。
+
 ---
 
 ## 10. 常见问题与排查
@@ -517,7 +606,7 @@ export ASTRASIM_HTSIM_PFC_HIGH_KB=50
 
 ### 10.4 1024 NPU 实验 OOM kill 137
 
-30 GiB RAM 不够。换机器到 ≥ 64 GiB 或扩 swap 到 32 GiB。
+§23 内存优化（chakra `feeder_v3` u32 NodeId、eventlist 二叉堆 + `ASTRASIM_HTSIM_EVENT_RESERVE` 预留、tcmalloc）已经把 512-NPU L48 的每 shard RSS 压到 ~1 GB，30 GiB 机器双 shard 并跑无忧。1024 NPU 单 shard 依然受 U12 物理内存限制——换机器到 ≥ 64 GiB 或扩 swap 到 32 GiB。
 
 ### 10.5 clean build 后数字跳变
 
@@ -535,13 +624,20 @@ bash build/astra_htsim/build.sh
 
 ### 10.7 修改了 htsim 源代码（`extern/.../sim/*`）
 
-**必须同步更新 patch**，否则下次 clean build 会丢改动：
+source-of-truth 是 `PeisongZhang/csg-htsim` fork 的 master：长期改动建议直接在 fork 上提交并 bump submodule pin。如果只想本地试一下，记得**同步更新对应 patch**，否则下次 clean build / submodule reset 会把改动丢掉：
 
 ```bash
 cd extern/network_backend/csg-htsim
-git diff sim/ > ../../../build/astra_htsim/htsim_astrasim.patch
+# 集成 hook（flow-finish / OCS / AIMD 等）改动 → 主 patch
+git diff sim/ -- ':!sim/eventlist.cpp' ':!sim/eventlist.h' \
+    > ../../../build/astra_htsim/htsim_astrasim.patch
+# eventlist 二叉堆相关改动 → 性能 patch
+git diff sim/eventlist.cpp sim/eventlist.h \
+    > ../../../build/astra_htsim/htsim_eventlist.patch
 rm -f sim/*.orig
 ```
+
+chakra 的 `DependancyResolver` 改动直接落到 `PeisongZhang/chakra` fork 的 `astrasim-perf` 分支（pin `6edbe37`），无需 patch 文件；如需进一步修改：在 chakra submodule 内 commit → push 到 fork → `git -C extern/graph_frontend/chakra rev-parse HEAD` 取新 sha → 在父 repo `git add extern/graph_frontend/chakra` 提 pin 升级。
 
 ---
 
@@ -552,14 +648,17 @@ astra-sim/
 ├── CLAUDE.md                       # Claude 工作指南（含项目惯例）
 ├── htsim_migration_plan.md         # 迁移计划 + 全部 session 交班记录（§22 是权威快照）
 ├── build/astra_htsim/
-│   ├── build.sh                    # 幂等构建入口
-│   ├── CMakeLists.txt              # Release + -march=native（LTO 故意关）
-│   ├── htsim_astrasim.patch        # htsim 源 patch（826 行 / 14 文件）
+│   ├── build.sh                    # 幂等构建入口（顺序 apply 两 htsim patch + cmake + make）
+│   ├── CMakeLists.txt              # 顶层入口
+│   ├── htsim_astrasim.patch        # 集成 hook patch（826 行 / 14 文件，已合入 fork master，回滚 Broadcom 主线时使用）
+│   ├── htsim_eventlist.patch       # eventlist 二叉堆 perf patch（500 行，已合入 fork master，同上）
 │   └── UPSTREAM_NOTES.md           # submodule pin & 升级评估
 ├── astra-sim/network_frontend/htsim/
+│   ├── CMakeLists.txt              # Release + tcmalloc 自动链接
 │   ├── HTSimMain.cc                # 入口
-│   ├── HTSimSession.{cc,hh}        # 协议 dispatch
+│   ├── HTSimSession.{cc,hh}        # 协议 dispatch + FlowLogger 插桩
 │   ├── HTSimNetworkApi.{cc,hh}     # AstraNetworkAPI 实现
+│   ├── FlowLogger.{cc,hh}          # 离线流量事件日志
 │   ├── proto/HTSimProtoTcp.{cc,hh}
 │   ├── proto/HTSimProtoRoCE.{cc,hh}
 │   ├── proto/HTSimProtoHPCC.{cc,hh}
@@ -572,10 +671,12 @@ astra-sim/
 │   │   ├── htsim_baseline.md       # Phase 0 基线记录
 │   │   ├── sharded_parallel_design.md
 │   │   └── htsim_usage_manual.md   # 本文件
-│   ├── tools/                      # 测试 + 分片 runner + ns-3 转换
+│   ├── tools/                      # 11 个集成测试 + 分片 runner + ns-3 转换 + 8 个 sharded 一键脚本
+│   ├── traffic_analysis/           # extract_traffic_matrix.py + visualize_traffic.py
 │   ├── smoke/run_htsim.sh          # 手动 smoke（替代 utils/htsim_smoke.sh 的长命令版本）
 │   └── run_all_htsim.sh            # 批量 runner
-├── extern/network_backend/csg-htsim  # submodule, pin 841d9e7
+├── extern/network_backend/csg-htsim  # submodule, fork PeisongZhang/csg-htsim, pin b88267e
+├── extern/graph_frontend/chakra      # submodule, pin 6edbe37（feeder_v3 u32 NodeId）
 └── {llama,llama3_70b,qwen,megatron_gpt}_experiment/*_htsim/   # 18 个实验目录
 ```
 
@@ -593,6 +694,11 @@ astra-sim/
 | 跑所有实验 + CSV | `bash htsim_experiment/run_all_htsim.sh` |
 | 金标准 smoke | `bash htsim_experiment/tools/run_gpt_39b_32_sharded.sh` |
 | 金标准 production | `bash htsim_experiment/tools/run_gpt_39b_512_L48_sharded.sh` |
-| 恢复 submodule | `cd extern/network_backend/csg-htsim && git checkout -- sim/` |
-| 同步 patch | `cd extern/network_backend/csg-htsim && git diff sim/ > ../../../build/astra_htsim/htsim_astrasim.patch` |
-| 清理所有运行产物 | `rm -rf htsim_experiment/*_sharded/ **/log/ **/run_htsim.log **/logout.dat **/idmap.txt **/sharded_runner.log` |
+| 金标准 + flow log | `bash htsim_experiment/tools/run_gpt_39b_512_L48_trafficmatrix.sh` |
+| B1536 完整 microbatch | `bash htsim_experiment/tools/run_gpt_39b_512_L48B1536_sharded.sh` |
+| 流量矩阵抽取 | `.venv/bin/python htsim_experiment/traffic_analysis/extract_traffic_matrix.py --log <flow_log.bin> ... --output traffic_matrix.npz` |
+| 流量可视化 | `.venv/bin/python htsim_experiment/traffic_analysis/visualize_traffic.py --matrix traffic_matrix.npz --out-dir plots/` |
+| 恢复 submodule | `cd extern/network_backend/csg-htsim && git checkout -- sim/ && rm -f sim/*.orig` |
+| 同步集成 patch | `cd extern/network_backend/csg-htsim && git diff sim/ -- ':!sim/eventlist.cpp' ':!sim/eventlist.h' > ../../../build/astra_htsim/htsim_astrasim.patch` |
+| 同步 eventlist patch | `cd extern/network_backend/csg-htsim && git diff sim/eventlist.cpp sim/eventlist.h > ../../../build/astra_htsim/htsim_eventlist.patch` |
+| 清理所有运行产物 | `rm -rf htsim_experiment/*_sharded/ htsim_experiment/*_trafficmatrix/ **/log/ **/run_htsim.log **/logout.dat **/idmap.txt **/sharded_runner.log` |

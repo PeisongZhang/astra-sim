@@ -40,4 +40,9 @@ local_mem_trace*.json
 idmap.txt
 logout.dat
 htsim_experiment/*_sharded/
+htsim_experiment/*_trafficmatrix/
 **/shard_*_exp/
+
+# editor / patch backups
+*.bak
+*.orig
