@@ -5,3 +5,5 @@ log_*/
 idmap.txt
 logout.dat
 *.bak
+report.md
+report.csv

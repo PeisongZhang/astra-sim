@@ -14,3 +14,4 @@ logout.dat
 report.md
 report.csv
 __pycache__/
+bin/
