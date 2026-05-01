@@ -21,10 +21,12 @@ HTSimProtoRoCE::HTSimProtoRoCE(const HTSim::tm_info* const tm, int argc, char** 
     }
     std::srand(seed);
     ::srandom(seed);
-    double endtime_sec = 1000.0;
+    // Default: 0 = unlimited (eventlist runs until completion_tracker is done
+    // or the event queue drains). Override with ASTRASIM_HTSIM_ENDTIME_SEC > 0
+    // to cap simulated time; values <= 0 are treated as "unlimited".
+    double endtime_sec = 0.0;
     if (const char* env = std::getenv("ASTRASIM_HTSIM_ENDTIME_SEC")) {
-        double v = std::atof(env);
-        if (v > 0) endtime_sec = v;
+        endtime_sec = std::atof(env);
     }
     // §11.3 speed lever — MTU/packet size. htsim's default is 1500 B; real DC
     // RoCE fabrics use 4 KB frames (MLNX default PAYLOAD_SIZE) or 9 KB jumbo
@@ -36,7 +38,18 @@ HTSimProtoRoCE::HTSimProtoRoCE(const HTSim::tm_info* const tm, int argc, char** 
         if (v >= 256 && v <= 65536) packet_bytes = v;
     }
     Packet::set_packet_size(packet_bytes);
-    eventlist.setEndtime(timeFromSec(endtime_sec));
+    if (endtime_sec > 0) {
+        eventlist.setEndtime(timeFromSec(endtime_sec));
+    } else {
+        // 0 = "unlimited" 语义。但 Clock 是个无限自重排的进度指示器，一旦所有
+        // flow 都完成而 CompletionTracker 又因为某些 rank 卡住没触发
+        // stop_simulation()，heap 里就只剩 Clock，simtime 会被以 0.5 s 一格
+        // 推高到 UINT64_MAX 附近，下一次 sourceIsPendingRel(now()+period)
+        // 在 uint64 上 wrap 后小于 now()，触发 eventlist.cpp:115 的
+        // assert(when>=now())。设一个远大于任何真实 workload 又远离溢出的
+        // 上限（1e6 s ≈ 11.5 天 simtime）来兜底。
+        eventlist.setEndtime(timeFromSec(1.0e6));
+    }
     c = std::make_unique<Clock>(timeFromSec(50 / 100.), eventlist);
     no_of_nodes = tm->nodes;
     linkspeed = speedFromMbps((double)kHostNicMbps);

@@ -1,0 +1,7 @@
+__pycache__/
+*.log
+log/
+log_*/
+idmap.txt
+logout.dat
+*.bak

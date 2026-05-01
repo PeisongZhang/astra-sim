@@ -7,7 +7,7 @@ set -o pipefail
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_DIR="${SCRIPT_DIR:?}/../.."
-TOP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc_htsim"
+TOP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc"
 TMP_LOG=/tmp/test_hpcc.log
 BASELINE_CYCLE=136168043798  # analytical llama/in_dc
 

@@ -67,12 +67,14 @@ PAPER = {
 }
 
 # Experiment bundle layout:
-#   key -> (model_key, activation_recompute_enabled, relative_path)
+#   key -> (model_key, activation_recompute_enabled, relative_path, log_filename)
+# Both 39b and 76b consolidate AR-on/AR-off (and analytical/htsim) into a single
+# shared-config dir.
 EXPERIMENTS = [
-    ("gpt_39b_512",       "39b", True,  "gpt_39b_512"),
-    ("gpt_39b_512_noar",  "39b", False, "gpt_39b_512_noar"),
-    ("gpt_76b_1024",      "76b", True,  "gpt_76b_1024"),
-    ("gpt_76b_1024_noar", "76b", False, "gpt_76b_1024_noar"),
+    ("gpt_39b_512",       "39b", True,  "gpt_39b_512",  "analytical.log"),
+    ("gpt_39b_512_noar",  "39b", False, "gpt_39b_512",  "analytical_noar.log"),
+    ("gpt_76b_1024",      "76b", True,  "gpt_76b_1024", "analytical.log"),
+    ("gpt_76b_1024_noar", "76b", False, "gpt_76b_1024", "analytical_noar.log"),
 ]
 
 
@@ -174,8 +176,8 @@ def run(experiment_root, ns_per_cycle, out_md, out_csv,
     md.append("| Experiment | Model | GPUs | AR | sim wall (s) | sim TFLOP/s/GPU | paper TFLOP/s/GPU | Δ% | sim peak% | paper peak% | sim agg PFLOP/s | paper agg PFLOP/s | comp-util | exp-comm/wall |")
     md.append("|-----------|-------|-----:|:--:|-------------:|----------------:|------------------:|---:|----------:|------------:|----------------:|-----------------:|----------:|--------------:|")
 
-    for key, model_key, ar_enabled, subdir in EXPERIMENTS:
-        log_path = os.path.join(experiment_root, subdir, "run_analytical.log")
+    for key, model_key, ar_enabled, subdir, log_name in EXPERIMENTS:
+        log_path = os.path.join(experiment_root, subdir, log_name)
         if not os.path.exists(log_path):
             print(f"[skip] {log_path} not found", file=sys.stderr)
             continue

@@ -1,8 +1,8 @@
 {
     "scheduling-policy": "LIFO",
     "endpoint-delay": 10,
-    "active-chunks-per-dimension": 1,
-    "preferred-dataset-splits": 4,
+    "active-chunks-per-dimension": 4,
+    "preferred-dataset-splits": 16,
     "all-reduce-implementation": [
         "ring"
     ],

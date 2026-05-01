@@ -33,13 +33,14 @@ int main(int argc, char* argv[]) {
         cmd_line_parser.get<std::string>("remote-memory-configuration");
     const auto network_configuration = cmd_line_parser.get<std::string>("network-configuration");
     const auto logging_configuration = cmd_line_parser.get<std::string>("logging-configuration");
+    const auto logging_folder = cmd_line_parser.get<std::string>("logging-folder");
     const auto num_queues_per_dim = cmd_line_parser.get<int>("num-queues-per-dim");
     const auto comm_scale = cmd_line_parser.get<double>("comm-scale");
     const auto injection_scale = cmd_line_parser.get<double>("injection-scale");
     const auto rendezvous_protocol = cmd_line_parser.get<bool>("rendezvous-protocol");
     const auto proto = cmd_line_parser.get<HTSimProto>("htsim-proto");
 
-    AstraSim::LoggerFactory::init(logging_configuration);
+    AstraSim::LoggerFactory::init(logging_configuration, logging_folder);
 
     // Parse the network YAML.
     // Note: htsim builds its own topology graph (FatTree today, GenericCustomTopology
@@ -146,6 +147,46 @@ int main(int argc, char* argv[]) {
     // check if terminated properly
     if (!completion_tracker.get()->all_finished()) {
         std::cout << "Warning: Simulation timed out." << std::endl;
+        // Diagnostic dump: which side of the send/recv handshake is still
+        // outstanding when the eventlist drains? In practice this is the
+        // discriminator between "buffer too small / RTO storm" (send_waiting
+        // pile-up) and "Sys layer never issued a matching sim_recv"
+        // (msg_standby pile-up) or "sim_recv issued but data never arrived"
+        // (recv_waiting pile-up). Suppress with ASTRASIM_HTSIM_DUMP_PENDING=0.
+        const char* suppress = std::getenv("ASTRASIM_HTSIM_DUMP_PENDING");
+        if (!suppress || std::string(suppress) != "0") {
+            std::cout << "[debug] pending: send_waiting=" << HTSimSession::send_waiting.size()
+                      << " recv_waiting=" << HTSimSession::recv_waiting.size()
+                      << " msg_standby=" << HTSimSession::msg_standby.size() << std::endl;
+            int cnt = 0;
+            for (const auto& kv : HTSimSession::send_waiting) {
+                if (cnt++ >= 10) { std::cout << "  ... (" << HTSimSession::send_waiting.size() - 10 << " more)\n"; break; }
+                const auto& key = kv.first;
+                std::cout << "  send_waiting tag=" << key.first.first
+                          << " src=" << key.first.second.first
+                          << " dst=" << key.first.second.second
+                          << " flow_id=" << key.second
+                          << " remaining=" << kv.second.remaining_msg_bytes << "\n";
+            }
+            cnt = 0;
+            for (const auto& kv : HTSimSession::recv_waiting) {
+                if (cnt++ >= 10) { std::cout << "  ... (" << HTSimSession::recv_waiting.size() - 10 << " more)\n"; break; }
+                const auto& key = kv.first;
+                std::cout << "  recv_waiting tag=" << key.first
+                          << " src=" << key.second.first
+                          << " dst=" << key.second.second
+                          << " remaining=" << kv.second.remaining_msg_bytes << "\n";
+            }
+            cnt = 0;
+            for (const auto& kv : HTSimSession::msg_standby) {
+                if (cnt++ >= 10) { std::cout << "  ... (" << HTSimSession::msg_standby.size() - 10 << " more)\n"; break; }
+                const auto& key = kv.first;
+                std::cout << "  msg_standby tag=" << key.first
+                          << " src=" << key.second.first
+                          << " dst=" << key.second.second
+                          << " bytes_buffered=" << kv.second << "\n";
+            }
+        }
     }
 
     // terminate simulation

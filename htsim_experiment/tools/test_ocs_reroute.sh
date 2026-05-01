@@ -18,7 +18,7 @@ set -o pipefail
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_DIR="${SCRIPT_DIR:?}/../.."
-EXP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc_htsim"
+EXP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc"
 BASELINE_CYCLE=136753283192
 
 fail() { echo "[ocs-reroute-test] FAIL: $*" >&2; exit 1; }

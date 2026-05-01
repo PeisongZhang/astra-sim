@@ -1,4 +1,0 @@
-# Custom topology for analytical congestion-aware backend.
-# Selene-like: 128 nodes x 8 A100 = 1024 GPUs, NVSwitch + per-GPU HDR + spine.
-topology: [ Custom ]
-topology_file: "topology.txt"

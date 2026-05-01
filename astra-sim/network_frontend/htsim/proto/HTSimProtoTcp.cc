@@ -52,15 +52,20 @@ static void print_path(std::ofstream &paths,const Route* rt){
 
 // Impl constructor that loads config for session
 HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** argv) {
-    // Default 1000s simulation window. Large enough to cover 1024-NPU megatron
-    // workloads that take ~15s simtime on analytical.  Overridable via
-    // ASTRASIM_HTSIM_ENDTIME_SEC (seconds).
-    double endtime_sec = 1000.0;
+    // Default: 0 = unlimited (eventlist runs until completion_tracker is done
+    // or the event queue drains). Override with ASTRASIM_HTSIM_ENDTIME_SEC > 0
+    // to cap simulated time; values <= 0 are treated as "unlimited".
+    double endtime_sec = 0.0;
     if (const char* env = std::getenv("ASTRASIM_HTSIM_ENDTIME_SEC")) {
-        double v = std::atof(env);
-        if (v > 0) endtime_sec = v;
+        endtime_sec = std::atof(env);
     }
-    eventlist.setEndtime(timeFromSec(endtime_sec));
+    if (endtime_sec > 0) {
+        eventlist.setEndtime(timeFromSec(endtime_sec));
+    } else {
+        // 见 HTSimProtoRoCE 同处注释：兜底防止 Clock 自循环把 simtime 推到
+        // uint64 溢出区域，否则 eventlist.cpp:115 assert(when>=now()) 会炸。
+        eventlist.setEndtime(timeFromSec(1.0e6));
+    }
     c = std::make_unique<Clock>(timeFromSec(50 / 100.), eventlist);
     no_of_nodes = tm->nodes;
     linkspeed = speedFromMbps((double)HOST_NIC);

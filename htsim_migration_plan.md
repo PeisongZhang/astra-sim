@@ -97,7 +97,7 @@ bash htsim_experiment/tools/test_generic_topology.sh       # PASS, max_cycle 11,
 bash htsim_experiment/tools/test_pp_sharded_runner.sh      # PASS, 2 shards 4/4
 
 # (c) llama/in_dc anchor (~70s) — 最敏感的 cycle 基准
-cd llama_experiment/in_dc_htsim && bash run_htsim.sh && cd ../..
+cd llama_experiment/in_dc && bash run_htsim.sh && cd ../..
 # 预期 max=136,719,260,632 ratio=1.0041（或 1.0043，byte-exact 二选一）
 
 # (d) gpt_39b 金标准 smoke (~12s)

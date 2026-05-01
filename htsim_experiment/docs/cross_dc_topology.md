@@ -33,7 +33,7 @@ Rules:
 
 ## Legacy inter-DC experiments
 
-All `llama_experiment/inter_dc*_htsim/` and `llama3_70b_experiment/inter_dc_*_htsim/` directories use plain `topology.txt` without the `#REGIONS` block. They pick up region 0 by default and still route correctly (latency/bandwidth differences stay in the per-link data, not in the routing table). This is by design — no edits to the existing topology files were required for the Phase 2 migration, and acceptance ratios (0.985 – 1.008 vs analytical/ns-3, see `htsim_usage_manual.md` §1.2) remain inside §11.6.
+All `llama_experiment/inter_dc*/` and `llama3_70b_experiment/inter_dc_*/` directories use plain `topology.txt` without the `#REGIONS` block. They pick up region 0 by default and still route correctly (latency/bandwidth differences stay in the per-link data, not in the routing table). This is by design — no edits to the existing topology files were required for the Phase 2 migration, and acceptance ratios (0.985 – 1.008 vs analytical/ns-3, see `htsim_usage_manual.md` §1.2) remain inside §11.6.
 
 ## Asymmetric WAN links
 

@@ -13,7 +13,7 @@ set -o pipefail
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_DIR="${SCRIPT_DIR:?}/../.."
-TOP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc_htsim"
+TOP_DIR="${PROJECT_DIR:?}/llama_experiment/in_dc"
 TMP_BASE=/tmp/wan_asym_test
 BASELINE_CYCLE=136719260632  # observed llama/in_dc_htsim with lossless mode
 

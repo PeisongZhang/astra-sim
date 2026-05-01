@@ -141,11 +141,11 @@ for t in htsim_experiment/tools/test_*.sh; do bash "$t" || break; done
 cd /home/ps/sow/part2/astra-sim
 for v in in_dc in_dc_dp inter_dc inter_dc_dp inter_dc_dp_localsgd \
          inter_dc_mesh inter_dc_ocs_mesh inter_dc_ocs_ring; do
-  rm -rf llama_experiment/${v}_htsim/log llama_experiment/${v}_htsim/run_htsim.log
+  rm -rf llama_experiment/${v}/log llama_experiment/${v}/run_htsim.log
   ASTRASIM_HTSIM_QUEUE_TYPE=lossless \
   ASTRASIM_HTSIM_ENDTIME_SEC=400 \
-    timeout 600 bash llama_experiment/${v}_htsim/run_htsim.sh > /dev/null 2>&1
-  echo "$v: $(grep -cE 'sys\[[0-9]+\] finished' llama_experiment/${v}_htsim/run_htsim.log)/16"
+    timeout 600 bash llama_experiment/${v}/run_htsim.sh > /dev/null 2>&1
+  echo "$v: $(grep -cE 'sys\[[0-9]+\] finished' llama_experiment/${v}/run_htsim.log)/16"
 done
 # 每行预期 16/16
 ```
@@ -218,10 +218,10 @@ export ASTRASIM_HTSIM_QUEUE_TYPE=lossless   # 推荐：N-way incast 必开
 export ASTRASIM_HTSIM_ENDTIME_SEC=400
 
 # 直接运行（run_htsim.sh 内含绝对路径，可从任意 cwd 启）
-bash llama_experiment/in_dc_htsim/run_htsim.sh
+bash llama_experiment/in_dc/run_htsim.sh
 
 # 结果落在 run_htsim.log
-grep -E "sys\[[0-9]+\] finished" llama_experiment/in_dc_htsim/run_htsim.log | tail
+grep -E "sys\[[0-9]+\] finished" llama_experiment/in_dc/run_htsim.log | tail
 ```
 
 每个 `run_htsim.sh` 都接受以下环境变量覆盖：
@@ -236,14 +236,14 @@ grep -E "sys\[[0-9]+\] finished" llama_experiment/in_dc_htsim/run_htsim.log | ta
 |---|---|---|---|
 | qwen | `qwen_experiment/ring_ag_htsim` | 16 | ✅ smoke |
 | | `qwen_experiment/in_dc_htsim` | 128 | ⏸ U2（单线程 DES 吞吐） |
-| llama | `llama_experiment/in_dc_htsim` | 16 | ✅ 1.004 |
-| | `llama_experiment/in_dc_dp_htsim` | 16 | ✅ 0.974 |
-| | `llama_experiment/inter_dc_htsim` | 16 | ✅ 1.004 |
-| | `llama_experiment/inter_dc_dp_htsim` | 16 | ✅ 0.985 |
-| | `llama_experiment/inter_dc_dp_localsgd_htsim` | 16 | ✅ 0.999 |
-| | `llama_experiment/inter_dc_mesh_htsim` | 16 | ✅ 1.008 vs ns-3 |
-| | `llama_experiment/inter_dc_ocs_mesh_htsim` | 16 | ✅ 1.008 vs ns-3 |
-| | `llama_experiment/inter_dc_ocs_ring_htsim` | 16 | ✅ 1.008 vs ns-3 |
+| llama | `llama_experiment/in_dc` | 16 | ✅ 1.004 |
+| | `llama_experiment/in_dc_dp` | 16 | ✅ 0.974 |
+| | `llama_experiment/inter_dc` | 16 | ✅ 1.004 |
+| | `llama_experiment/inter_dc_dp` | 16 | ✅ 0.985 |
+| | `llama_experiment/inter_dc_dp_localsgd` | 16 | ✅ 0.999 |
+| | `llama_experiment/inter_dc_mesh` | 16 | ✅ 1.008 vs ns-3 |
+| | `llama_experiment/inter_dc_ocs_mesh` | 16 | ✅ 1.008 vs ns-3 |
+| | `llama_experiment/inter_dc_ocs_ring` | 16 | ✅ 1.008 vs ns-3 |
 | megatron_gpt | `gpt_39b_512_htsim` | 512 | ⏸ 直跑 U2 阻塞；分片 PASS |
 | | `gpt_39b_512_noar_htsim` | 512 | ⏸ 同上 |
 | | `gpt_76b_1024_htsim` | 1024 | ⏸ U2 + U12 |
@@ -418,7 +418,7 @@ bash htsim_experiment/tools/run_gpt_39b_512_L48_trafficmatrix.sh
 
 ```bash
 bash htsim_experiment/tools/run_pp_sharded.sh \
-  --base-exp  llama_experiment/in_dc_htsim \
+  --base-exp  llama_experiment/in_dc \
   --workload-dir /path/to/stg_output_dir \
   --pp 2 --dp 32 --tp 8 \
   --out-dir htsim_experiment/my_sharded \
@@ -480,15 +480,9 @@ export ASTRASIM_HTSIM_EVENT_RESERVE=50000000   # gpt_39b L48 B256 ≈ 1.2 GB
 
 ## 9. 新增一个 htsim 实验
 
-### 9.1 从现有 analytical 实验迁移（推荐）
+### 9.1 在现有 analytical 实验目录中新增 htsim 启动脚本（推荐）
 
-```bash
-cd /home/ps/sow/part2/astra-sim
-cp -r llama_experiment/in_dc llama_experiment/in_dc_htsim
-# 仅保留 htsim 需要的文件；如有必要清理 analytical/ns-3 特有产物
-```
-
-按模板写 `run_htsim.sh`（参考 `llama_experiment/in_dc_htsim/run_htsim.sh`）：
+analytical / ns-3 / htsim 共享同一份实验目录（`astra_system.json`、`no_memory_expansion.json`、`topology.txt`、`analytical_network.yml`），只需在该目录下添加一个 `run_htsim.sh` 启动脚本即可。参考 `llama_experiment/in_dc/run_htsim.sh`：
 
 ```bash
 #!/bin/bash
@@ -524,7 +518,7 @@ python3 htsim_experiment/tools/ns3_config_to_htsim.py \
 # 应用到当前 shell，然后跑 htsim
 eval "$(python3 htsim_experiment/tools/ns3_config_to_htsim.py \
     llama_experiment/inter_dc_mesh/ns3_config.txt)"
-bash llama_experiment/inter_dc_mesh_htsim/run_htsim.sh
+bash llama_experiment/inter_dc_mesh/run_htsim.sh
 ```
 
 已处理字段：`CC_MODE` → `HTSIM_PROTO`、`ENABLE_QCN` → `QUEUE_TYPE=lossless`、`PACKET_PAYLOAD_SIZE`、`BUFFER_SIZE`、`KMAX_MAP` / `KMIN_MAP` / `PMAX_MAP`、`LINK_DOWN` → `OCS_SCHEDULE`、`ENABLE_TRACE`、`ACK_HIGH_PRIO`。
@@ -690,7 +684,7 @@ astra-sim/
 | 清洁重建 | `bash build/astra_htsim/build.sh -l && bash build/astra_htsim/build.sh` |
 | CI smoke | `bash utils/htsim_smoke.sh` |
 | 集成测试全套 | `for t in htsim_experiment/tools/test_*.sh; do bash "$t"; done` |
-| 跑单实验 | `bash llama_experiment/in_dc_htsim/run_htsim.sh` |
+| 跑单实验 | `bash llama_experiment/in_dc/run_htsim.sh` |
 | 跑所有实验 + CSV | `bash htsim_experiment/run_all_htsim.sh` |
 | 金标准 smoke | `bash htsim_experiment/tools/run_gpt_39b_32_sharded.sh` |
 | 金标准 production | `bash htsim_experiment/tools/run_gpt_39b_512_L48_sharded.sh` |
